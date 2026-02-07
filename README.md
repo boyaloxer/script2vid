@@ -8,10 +8,10 @@ All you need is **3 API keys** and **a script**. Everything else is automated.
 
 | What | Where to get it | Cost |
 |---|---|---|
-| **LLM API key** | Any OpenAI-compatible provider: [Moonshot / Kimi 2.5](https://platform.moonshot.cn/), [OpenAI](https://platform.openai.com/), etc. | Varies by provider |
+| **LLM API key** | Any OpenAI-compatible provider: [Moonshot / Kimi K2.5](https://platform.moonshot.ai/), [OpenAI](https://platform.openai.com/), etc. | Varies by provider |
 | **Pexels API key** | [pexels.com](https://www.pexels.com/api/) — sign up and get a key | Free |
 | **ElevenLabs API key** | [elevenlabs.io](https://elevenlabs.io) — sign up and get a key from your dashboard | Free tier available |
-| **Your script** | A plain text file (`.txt`) or a string passed via command line | — |
+| **Your script** | A plain text file (`.txt`) in the `scripts/` folder | — |
 
 **What you do NOT need to provide:**
 - No video footage — searched and downloaded automatically from Pexels
@@ -24,8 +24,8 @@ All you need is **3 API keys** and **a script**. Everything else is automated.
 1. **Script Analysis** — An AI breaks your script into visual segments with search keywords
 2. **Footage Retrieval** — Searches Pexels for stock footage matching each segment
 3. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps
-4. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to audio timing
-5. **Video Rendering** — MoviePy executes the EDL and renders the final MP4
+4. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using precise timestamp data so footage stays in sync with narration
+5. **Video Rendering** — MoviePy executes the EDL and renders the final MP4 (clip audio is muted — only the narrator is heard)
 
 ## Setup
 
@@ -53,15 +53,15 @@ Then open `.env` and fill in your keys:
 ```env
 # LLM (any OpenAI-compatible API)
 LLM_API_KEY=your_key_here
-LLM_BASE_URL=https://api.moonshot.cn/v1    # change if using a different provider
-LLM_MODEL=kimi-2.5                          # change to match your provider's model name
+LLM_BASE_URL=https://api.moonshot.ai/v1    # change if using a different provider
+LLM_MODEL=kimi-k2.5                         # change to match your provider's model name
 
 # Pexels
 PEXELS_API_KEY=your_key_here
 
 # ElevenLabs
 ELEVENLABS_API_KEY=your_key_here
-ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # optional — default voice is provided
+ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # optional — pick a voice from ElevenLabs
 ```
 
 ### 3. (Optional) Adjust output settings
@@ -75,32 +75,48 @@ OUTPUT_FPS=30                 # default: 30fps
 
 ## Usage
 
-```bash
-# From a script file
-python -m src script.txt
+Place your script in the `scripts/` folder as a `.txt` file, then run:
 
-# Or pass the script directly
-python -m src --script "Artificial intelligence is transforming every industry. From healthcare to finance, machine learning models are automating tasks that once required human expertise."
+```bash
+python -m src scripts/deep_thoughts_01.txt
+```
+
+Or pass a script directly:
+
+```bash
+python -m src --script "Your video script text here."
 ```
 
 That's it. The pipeline runs automatically and outputs a finished video.
 
+### Re-running the same script
+
+Running the same script again won't overwrite previous output. Videos are auto-versioned:
+
+- First run: `deep_thoughts_01.mp4`
+- Second run: `deep_thoughts_01_v2.mp4`
+- Third run: `deep_thoughts_01_v3.mp4`
+
+This lets you compare results and upload the best one.
+
 ## Output
 
-The final video and all intermediate files are saved in `workspace/`:
+Each script gets its own folder in `workspace/`, named after the script file:
 
 ```
 workspace/
-├── clips/                        # Downloaded stock footage
-├── audio/
-│   └── narration.mp3             # Generated voiceover
-├── output/
-│   └── final_video.mp4           # The finished video
-├── 1_segments.json               # Script segments from AI analysis
-├── 2_segments_with_footage.json  # Segments with matched footage
-├── 3_alignment.json              # Character-level timing from ElevenLabs
-├── 3_segments_with_timing.json   # Segments with audio time ranges
-└── 4_edl.json                    # The Edit Decision List
+└── deep_thoughts_01/
+    ├── clips/                        # Downloaded stock footage
+    ├── audio/
+    │   └── narration.mp3             # Generated voiceover
+    ├── output/
+    │   ├── deep_thoughts_01.mp4      # First run
+    │   └── deep_thoughts_01_v2.mp4   # Second run (auto-versioned)
+    ├── 1_segments.json               # Script segments from AI analysis
+    ├── 2_segments_with_footage.json  # Segments with matched footage
+    ├── 3_alignment.json              # Character-level timing from ElevenLabs
+    ├── 3_segments_with_timing.json   # Segments with audio time ranges
+    └── 4_edl.json                    # The Edit Decision List
 ```
 
 The JSON files are saved for debugging — you can inspect them to see exactly what the AI decided at each stage.
@@ -108,9 +124,10 @@ The JSON files are saved for debugging — you can inspect them to see exactly w
 ## Project Structure
 
 ```
+scripts/                 # Put your .txt scripts here
 src/
 ├── main.py              # Orchestrator — runs the full pipeline
-├── config.py            # Settings and API keys (from .env)
+├── config.py            # Settings, API keys, per-script project folders
 ├── llm.py               # Shared LLM helper (OpenAI-compatible)
 ├── script_analyzer.py   # Stage 1: Script → visual segments
 ├── footage_finder.py    # Stage 2: Pexels search → download clips
