@@ -1,0 +1,15 @@
+# API keys
+.env
+
+# Working files (clips, audio, rendered videos)
+workspace/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
