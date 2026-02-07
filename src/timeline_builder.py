@@ -11,7 +11,9 @@ from src.llm import chat_json
 SYSTEM_PROMPT = """\
 You are a professional video editor AI. You are given a list of script segments, \
 each with:
-- audio_start / audio_end: the time range in the narration audio
+- slot_start / slot_end / slot_duration: the FULL time slot this clip must fill \
+  (includes the narration AND any silence before the next segment begins)
+- audio_start / audio_end: when the narration is actually being spoken within the slot
 - footage_path: path to the downloaded stock footage clip
 - footage_duration: total duration of the source clip in seconds
 - visual_description: what this segment should look like
@@ -21,8 +23,8 @@ a video rendering engine exactly how to assemble the final video.
 
 For each entry in the EDL:
 - "segment_id": which script segment this corresponds to
-- "audio_start": start time in the narration audio (seconds)
-- "audio_end": end time in the narration audio (seconds)
+- "slot_start": start of this clip's time slot (seconds)
+- "slot_end": end of this clip's time slot (seconds)
 - "footage_file": path to the footage clip file
 - "footage_trim_start": where to start in the source clip (seconds) — pick the \
   most visually interesting portion that fits the duration needed
@@ -32,8 +34,9 @@ For each entry in the EDL:
 
 Rules:
 1. The footage trim duration (footage_trim_end - footage_trim_start) MUST equal \
-   the audio segment duration (audio_end - audio_start). The video clip must exactly \
-   fill its time slot.
+   slot_duration (NOT audio_end - audio_start). The clip must fill the FULL time \
+   slot including any silence after the narration, so the footage continues playing \
+   naturally during pauses.
 2. footage_trim_start must be >= 0 and footage_trim_end must be <= footage_duration.
 3. If a clip is shorter than needed, set footage_trim_start to 0 and footage_trim_end \
    to the clip's full duration. The renderer will handle speed adjustment.
@@ -66,6 +69,9 @@ def build_timeline(segments: list[dict]) -> list[dict]:
             "mood": seg.get("mood", "neutral"),
             "audio_start": seg["audio_start"],
             "audio_end": seg["audio_end"],
+            "slot_start": seg["slot_start"],
+            "slot_end": seg["slot_end"],
+            "slot_duration": seg["slot_duration"],
             "footage_path": seg.get("footage_path"),
             "footage_duration": seg.get("footage_duration", 0),
         })
@@ -83,36 +89,43 @@ def build_timeline(segments: list[dict]) -> list[dict]:
         raise ValueError("LLM returned an invalid or empty EDL.")
 
     for entry in edl:
-        # Ensure trim duration matches audio duration
-        audio_dur = entry["audio_end"] - entry["audio_start"]
-        trim_dur = entry["footage_trim_end"] - entry["footage_trim_start"]
-
         if entry.get("footage_file") is None:
             continue
 
-        # Clamp trim points to valid range
-        entry["footage_trim_start"] = max(0.0, entry["footage_trim_start"])
-
-        # Find the matching segment to get footage_duration
+        # Find the matching segment to get slot_duration and footage_duration
         matching_seg = next(
             (s for s in segments if s["segment_id"] == entry["segment_id"]),
             None,
         )
+
+        # The target duration is the SLOT duration, not the speech duration
+        slot_dur = matching_seg["slot_duration"] if matching_seg else (
+            entry.get("slot_end", entry["audio_end"]) - entry.get("slot_start", entry["audio_start"])
+        )
+
+        # Clamp trim points to valid range
+        entry["footage_trim_start"] = max(0.0, entry["footage_trim_start"])
+
         if matching_seg and matching_seg.get("footage_duration"):
             max_dur = matching_seg["footage_duration"]
             entry["footage_trim_end"] = min(entry["footage_trim_end"], max_dur)
 
-        # If trim is still mismatched, adjust end to match audio duration
+        # Ensure trim duration matches the full slot duration
         actual_trim = entry["footage_trim_end"] - entry["footage_trim_start"]
-        if abs(actual_trim - audio_dur) > 0.1:
-            # Try to extend the end point
-            desired_end = entry["footage_trim_start"] + audio_dur
+        if abs(actual_trim - slot_dur) > 0.1:
+            # Try to extend the end point to match slot duration
+            desired_end = entry["footage_trim_start"] + slot_dur
             if matching_seg and matching_seg.get("footage_duration"):
                 if desired_end <= matching_seg["footage_duration"]:
                     entry["footage_trim_end"] = round(desired_end, 3)
                 else:
                     # Clip is too short — mark for speed adjustment
                     entry["_needs_speed_adjust"] = True
+
+        # Store slot info on the EDL entry for the assembler
+        entry["slot_start"] = matching_seg["slot_start"] if matching_seg else entry.get("slot_start", 0)
+        entry["slot_end"] = matching_seg["slot_end"] if matching_seg else entry.get("slot_end", 0)
+        entry["slot_duration"] = round(slot_dur, 3)
 
     print(f"[Timeline Builder] Generated EDL with {len(edl)} entries.")
     return edl

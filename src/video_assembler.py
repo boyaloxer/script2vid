@@ -27,9 +27,14 @@ from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS, OUTPUT_DIR
 def _load_and_trim_clip(entry: dict) -> VideoFileClip | ColorClip:
     """
     Load a footage clip and trim it according to the EDL entry.
-    Returns a clip sized to fill the target audio duration.
+    Returns a clip sized to fill the FULL slot duration (including silence
+    between narration segments), so clips stay in sync with the audio.
     """
-    audio_dur = round(entry["audio_end"] - entry["audio_start"], 3)
+    # Use slot_duration (full slot) instead of just the speech duration
+    target_dur = entry.get("slot_duration")
+    if target_dur is None:
+        # Fallback for old EDL format without slot info
+        target_dur = round(entry["audio_end"] - entry["audio_start"], 3)
 
     # If no footage, produce a black frame
     if entry.get("footage_file") is None:
@@ -37,7 +42,7 @@ def _load_and_trim_clip(entry: dict) -> VideoFileClip | ColorClip:
         return ColorClip(
             size=(OUTPUT_WIDTH, OUTPUT_HEIGHT),
             color=(0, 0, 0),
-        ).with_duration(audio_dur).with_fps(OUTPUT_FPS)
+        ).with_duration(target_dur).with_fps(OUTPUT_FPS)
 
     clip = VideoFileClip(entry["footage_file"])
 
@@ -51,18 +56,18 @@ def _load_and_trim_clip(entry: dict) -> VideoFileClip | ColorClip:
 
     clip = clip.subclipped(trim_start, trim_end)
 
-    # If the trimmed clip doesn't match the needed duration, adjust speed
+    # If the trimmed clip doesn't match the needed slot duration, adjust speed
     trim_dur = clip.duration
-    if abs(trim_dur - audio_dur) > 0.1 and audio_dur > 0:
-        speed_factor = trim_dur / audio_dur
+    if abs(trim_dur - target_dur) > 0.1 and target_dur > 0:
+        speed_factor = trim_dur / target_dur
         if 0.5 <= speed_factor <= 2.0:
             # Acceptable speed range — apply time stretch
             clip = clip.with_effects([vfx.MultiplySpeed(speed_factor)])
         else:
             # Too extreme — just force the duration (may freeze/skip frames)
-            clip = clip.with_duration(audio_dur)
+            clip = clip.with_duration(target_dur)
     else:
-        clip = clip.with_duration(audio_dur)
+        clip = clip.with_duration(target_dur)
 
     # Resize to target resolution (maintaining aspect ratio with crop)
     clip = _resize_and_crop(clip)
@@ -113,8 +118,8 @@ def assemble_video(edl: list[dict], audio_path: Path, output_name: str = "final_
     """
     print(f"[Video Assembler] Building video from {len(edl)} EDL entries...")
 
-    # Sort EDL by audio_start to ensure correct ordering
-    edl_sorted = sorted(edl, key=lambda e: e["audio_start"])
+    # Sort EDL by slot_start to ensure correct ordering
+    edl_sorted = sorted(edl, key=lambda e: e.get("slot_start", e.get("audio_start", 0)))
 
     # Load and trim all clips
     clips = []

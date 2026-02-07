@@ -74,8 +74,8 @@ def run_pipeline(script_text: str) -> Path:
     audio_path, alignment = generate_voiceover(full_script)
     _save_json(alignment, "3_alignment.json")
 
-    # Map timing back onto segments
-    segments = map_segments_to_time_ranges(segments, alignment)
+    # Map timing back onto segments (pass audio_path so we can get total duration)
+    segments = map_segments_to_time_ranges(segments, alignment, audio_path)
     _save_json(segments, "3_segments_with_timing.json")
 
     # ──────────────────────────────────────────────

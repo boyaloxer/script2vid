@@ -39,7 +39,7 @@ def chat(system_prompt: str, user_prompt: str, temperature: float | None = None)
             "Content-Type": "application/json",
         },
         json=body,
-        timeout=120,
+        timeout=300,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]
