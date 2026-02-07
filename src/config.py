@@ -14,8 +14,8 @@ load_dotenv(_project_root / ".env")
 # LLM (any OpenAI-compatible API: Kimi 2.5, OpenAI, etc.)
 # ---------------------------------------------------------------------------
 LLM_API_KEY = os.getenv("LLM_API_KEY", "")
-LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.moonshot.cn/v1")
-LLM_MODEL = os.getenv("LLM_MODEL", "kimi-2.5")
+LLM_BASE_URL = os.getenv("LLM_BASE_URL", "https://api.moonshot.ai/v1")
+LLM_MODEL = os.getenv("LLM_MODEL", "kimi-k2.5")
 
 # ---------------------------------------------------------------------------
 # Pexels

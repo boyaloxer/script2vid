@@ -143,7 +143,7 @@ def assemble_video(edl: list[dict], audio_path: Path, output_name: str = "final_
     # If there's original clip audio, mix it low under the narration
     if video.audio is not None:
         # Lower original clip audio to 10% volume
-        bg_audio = video.audio.with_effects([vfx.MultiplyVolume(0.1)])
+        bg_audio = video.audio * 0.1
         mixed_audio = CompositeAudioClip([narration, bg_audio])
         video = video.with_audio(mixed_audio)
     else:
