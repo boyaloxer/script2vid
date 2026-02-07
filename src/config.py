@@ -3,12 +3,23 @@ Central configuration — loads from .env file and exposes settings.
 """
 
 import os
+import shutil
 from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env from project root
 _project_root = Path(__file__).resolve().parent.parent
 load_dotenv(_project_root / ".env")
+
+# ---------------------------------------------------------------------------
+# FFmpeg — must be set BEFORE moviepy / imageio_ffmpeg are imported.
+# MoviePy 2.x on Windows can deadlock during auto-detection; bypassing it
+# with an explicit path prevents the hang.
+# ---------------------------------------------------------------------------
+if not os.environ.get("IMAGEIO_FFMPEG_EXE"):
+    _ffmpeg = os.getenv("FFMPEG_PATH") or shutil.which("ffmpeg")
+    if _ffmpeg:
+        os.environ["IMAGEIO_FFMPEG_EXE"] = _ffmpeg
 
 # ---------------------------------------------------------------------------
 # LLM (any OpenAI-compatible API: Kimi 2.5, OpenAI, etc.)
