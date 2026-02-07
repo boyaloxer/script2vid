@@ -8,12 +8,20 @@ import requests
 from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
 
 
-def chat(system_prompt: str, user_prompt: str, temperature: float | None = None) -> str:
+def chat(
+    system_prompt: str,
+    user_prompt: str,
+    temperature: float | None = None,
+    max_tokens: int = 16384,
+) -> str:
     """
     Send a chat completion request and return the assistant's reply text.
 
     Note: Kimi K2.5 only accepts temperature=0.6 (non-thinking) or 1.0 (thinking).
     If temperature is None, it is omitted so the API uses its default.
+
+    max_tokens prevents silent output truncation — Kimi K2.5 may default to a
+    very low output cap if not set explicitly. 16384 is safe for most responses.
     """
     if not LLM_API_KEY:
         raise RuntimeError(
@@ -26,6 +34,7 @@ def chat(system_prompt: str, user_prompt: str, temperature: float | None = None)
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
+        "max_tokens": max_tokens,
     }
 
     # Only include temperature if explicitly set (Kimi K2.5 rejects arbitrary values)

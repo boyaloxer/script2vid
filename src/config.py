@@ -48,21 +48,23 @@ WORK_DIR.mkdir(parents=True, exist_ok=True)
 def create_project_dirs(project_name: str) -> dict:
     """
     Create a per-script project folder inside workspace.
-    Returns a dict of paths: project_dir, clips_dir, audio_dir, output_dir.
+    Returns a dict of paths: project_dir, clips_dir, audio_dir, output_dir, credits_dir.
 
     Structure:
         workspace/
         └── deep_thoughts_01/
-            ├── clips/
             ├── audio/
+            ├── clips/
+            ├── credits/
             └── output/
     """
     project_dir = WORK_DIR / project_name
     clips_dir = project_dir / "clips"
     audio_dir = project_dir / "audio"
     output_dir = project_dir / "output"
+    credits_dir = project_dir / "credits"
 
-    for d in (project_dir, clips_dir, audio_dir, output_dir):
+    for d in (project_dir, clips_dir, audio_dir, output_dir, credits_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     return {
@@ -70,4 +72,5 @@ def create_project_dirs(project_name: str) -> dict:
         "clips_dir": clips_dir,
         "audio_dir": audio_dir,
         "output_dir": output_dir,
+        "credits_dir": credits_dir,
     }

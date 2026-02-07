@@ -105,19 +105,39 @@ def _resize_and_crop(clip: VideoFileClip) -> VideoFileClip:
     return clip
 
 
-def assemble_video(edl: list[dict], audio_path: Path, output_dir: Path, output_name: str = "final_video.mp4") -> Path:
+def assemble_video(
+    edl: list[dict],
+    audio_path: Path,
+    output_dir: Path,
+    output_name: str = "final_video.mp4",
+    quality: str = "final",
+) -> Path:
     """
     Execute the EDL: load clips, apply transitions, overlay audio, render.
 
     Args:
         edl: The Edit Decision List (list of dicts from timeline_builder)
         audio_path: Path to the narration audio file
+        output_dir: Directory to save the output video
         output_name: Filename for the output video
+        quality: "draft" for fast renders (lower quality, ~3-5x faster),
+                 "final" for production quality (default)
 
     Returns:
         Path to the rendered video file.
     """
+    import os
+
+    # Render presets: draft is much faster, final is higher quality
+    presets = {
+        "draft": "ultrafast",
+        "final": "medium",
+    }
+    preset = presets.get(quality, "medium")
+    threads = os.cpu_count() or 4
+
     print(f"[Video Assembler] Building video from {len(edl)} EDL entries...")
+    print(f"[Video Assembler] Quality: {quality} (preset={preset}, threads={threads})")
 
     # Sort EDL by slot_start to ensure correct ordering
     edl_sorted = sorted(edl, key=lambda e: e.get("slot_start", e.get("audio_start", 0)))
@@ -155,8 +175,8 @@ def assemble_video(edl: list[dict], audio_path: Path, output_dir: Path, output_n
         fps=OUTPUT_FPS,
         codec="libx264",
         audio_codec="aac",
-        preset="medium",
-        threads=4,
+        preset=preset,
+        threads=threads,
     )
 
     # Clean up

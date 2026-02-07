@@ -1,9 +1,11 @@
 """
 Stage 3 — Voiceover Generation + Timestamp Extraction
 
-Sends the script to ElevenLabs TTS with timestamps enabled.
-Returns the audio file path and word-level timing data,
-then maps timing back onto the script segments.
+Generates narration audio via ElevenLabs TTS with character-level timestamps.
+For scripts longer than the per-request character limit (10,000 for
+eleven_multilingual_v2), automatically chunks the text and uses ElevenLabs'
+Request Stitching (previous_request_ids) to maintain consistent voice prosody
+across chunks.
 """
 
 import base64
@@ -16,10 +18,15 @@ from src.config import (
     ELEVENLABS_VOICE_ID,
 )
 
+# eleven_multilingual_v2 has a 10,000 char limit; leave buffer
+_CHAR_LIMIT = 9500
+
 
 def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     """
     Generate narration audio with character-level timestamps.
+    Automatically chunks long scripts and uses Request Stitching for
+    consistent voice quality across chunks.
 
     Returns:
         (audio_path, alignment_data)
@@ -34,7 +41,45 @@ def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY is not set. Add it to your .env file.")
 
+    if len(script_text) <= _CHAR_LIMIT:
+        return _tts_single(script_text, audio_dir)
+    else:
+        return _tts_chunked(script_text, audio_dir)
+
+
+# ---------------------------------------------------------------------------
+#  Internal helpers
+# ---------------------------------------------------------------------------
+
+def _tts_request(
+    text: str,
+    previous_request_ids: list[str] | None = None,
+) -> tuple[bytes, dict, str]:
+    """
+    Single ElevenLabs TTS API call with timestamps.
+
+    Args:
+        text: The text to synthesise.
+        previous_request_ids: Up to 3 IDs from prior requests for
+            Request Stitching (maintains prosody across chunks).
+
+    Returns:
+        (audio_bytes, alignment_dict, request_id)
+    """
     url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
+
+    body: dict = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75,
+        },
+    }
+
+    # Request Stitching: pass previous request IDs for prosody continuity
+    if previous_request_ids:
+        body["previous_request_ids"] = previous_request_ids
 
     resp = requests.post(
         url,
@@ -42,30 +87,154 @@ def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
             "xi-api-key": ELEVENLABS_API_KEY,
             "Content-Type": "application/json",
         },
-        json={
-            "text": script_text,
-            "model_id": "eleven_multilingual_v2",
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75,
-            },
-        },
-        timeout=180,
+        json=body,
+        timeout=300,
     )
     resp.raise_for_status()
-    data = resp.json()
 
-    # Decode and save audio
+    data = resp.json()
     audio_bytes = base64.b64decode(data["audio_base64"])
+    alignment = data.get("alignment", {})
+    request_id = resp.headers.get("request-id", "")
+
+    return audio_bytes, alignment, request_id
+
+
+def _tts_single(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
+    """Generate audio in a single API call (scripts under the char limit)."""
+    print(f"[Voiceover] Script is {len(script_text):,} chars — single request")
+    audio_bytes, alignment, _ = _tts_request(script_text)
+
     audio_path = audio_dir / "narration.mp3"
     audio_path.write_bytes(audio_bytes)
     print(f"[Voiceover] Saved narration audio to {audio_path}")
 
-    alignment = data.get("alignment", {})
     if not alignment:
         print("[Voiceover] WARNING: No alignment data returned by ElevenLabs.")
 
     return audio_path, alignment
+
+
+def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
+    """
+    Generate audio for a long script by splitting into chunks and using
+    ElevenLabs Request Stitching to maintain voice consistency.
+
+    Chunks are split at sentence boundaries to avoid cutting mid-sentence.
+    Audio bytes are concatenated directly (MP3 is frame-based).
+    Alignment timestamps are offset by the cumulative audio duration of
+    previous chunks so the final alignment is continuous.
+    """
+    chunks = _split_into_chunks(script_text, _CHAR_LIMIT)
+    print(
+        f"[Voiceover] Script is {len(script_text):,} chars — "
+        f"splitting into {len(chunks)} chunks (limit: {_CHAR_LIMIT:,} chars/chunk)"
+    )
+
+    request_ids: list[str] = []
+    chunk_audio_parts: list[bytes] = []
+    merged_alignment: dict = {
+        "characters": [],
+        "character_start_times_seconds": [],
+        "character_end_times_seconds": [],
+    }
+    cumulative_duration = 0.0
+
+    for i, chunk_text in enumerate(chunks):
+        print(
+            f"[Voiceover] Generating chunk {i + 1}/{len(chunks)} "
+            f"({len(chunk_text):,} chars)..."
+        )
+
+        # Pass up to 3 recent request IDs for prosody continuity
+        prev_ids = request_ids[-3:] if request_ids else None
+        audio_bytes, alignment, request_id = _tts_request(chunk_text, prev_ids)
+
+        if request_id:
+            request_ids.append(request_id)
+
+        # Measure actual chunk duration via temp file (more accurate than timestamps)
+        chunk_duration = 0.0
+        temp_path = audio_dir / f"_chunk_{i}.mp3"
+        temp_path.write_bytes(audio_bytes)
+        try:
+            from moviepy import AudioFileClip
+            clip = AudioFileClip(str(temp_path))
+            chunk_duration = clip.duration
+            clip.close()
+        except Exception:
+            # Fall back to alignment-based duration
+            chunk_ends = alignment.get("character_end_times_seconds", [])
+            chunk_duration = chunk_ends[-1] if chunk_ends else 0.0
+        finally:
+            temp_path.unlink(missing_ok=True)
+
+        # Merge alignment data with cumulative time offset
+        for start in alignment.get("character_start_times_seconds", []):
+            merged_alignment["character_start_times_seconds"].append(
+                round(start + cumulative_duration, 4)
+            )
+        for end in alignment.get("character_end_times_seconds", []):
+            merged_alignment["character_end_times_seconds"].append(
+                round(end + cumulative_duration, 4)
+            )
+        merged_alignment["characters"].extend(
+            alignment.get("characters", [])
+        )
+
+        chunk_audio_parts.append(audio_bytes)
+        cumulative_duration += chunk_duration
+
+        print(
+            f"[Voiceover] Chunk {i + 1}: {chunk_duration:.2f}s "
+            f"(cumulative: {cumulative_duration:.2f}s)"
+        )
+
+    # Concatenate all chunk audio (MP3 is frame-based, byte concat works)
+    audio_path = audio_dir / "narration.mp3"
+    audio_path.write_bytes(b"".join(chunk_audio_parts))
+
+    print(
+        f"[Voiceover] Saved combined narration "
+        f"({cumulative_duration:.1f}s) to {audio_path}"
+    )
+
+    if not merged_alignment["characters"]:
+        print("[Voiceover] WARNING: No alignment data returned by ElevenLabs.")
+
+    return audio_path, merged_alignment
+
+
+def _split_into_chunks(text: str, max_chars: int) -> list[str]:
+    """
+    Split text into chunks of at most max_chars, breaking at sentence
+    boundaries (. ? !) to avoid cutting mid-sentence.
+    Falls back to word boundaries if no sentence end is found.
+    """
+    chunks = []
+    remaining = text.strip()
+
+    while len(remaining) > max_chars:
+        # Find the last sentence-ending punctuation before the limit
+        split_at = -1
+        for sep in [". ", "? ", "! ", ".\n", "?\n", "!\n"]:
+            idx = remaining[:max_chars].rfind(sep)
+            if idx > split_at:
+                split_at = idx + len(sep)
+
+        # If no sentence boundary found, split at last space
+        if split_at <= 0:
+            split_at = remaining[:max_chars].rfind(" ")
+        if split_at <= 0:
+            split_at = max_chars  # hard split as last resort
+
+        chunks.append(remaining[:split_at].strip())
+        remaining = remaining[split_at:].strip()
+
+    if remaining:
+        chunks.append(remaining)
+
+    return chunks
 
 
 def _reconstruct_words(alignment: dict) -> list[dict]:

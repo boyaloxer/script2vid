@@ -3,13 +3,24 @@ Stage 2 — Footage Retrieval & Selection
 
 Queries the Pexels Video API for each script segment, scores results,
 selects the best clip, and downloads it locally.
+
+Includes a sliding-window rate limiter to stay within Pexels' 200 req/hour
+limit on long-form videos (80–150+ segments).
 """
 
-import time
 from pathlib import Path
 import requests
 
 from src.config import PEXELS_API_KEY, PEXELS_BASE_URL
+from src.rate_limiter import RateLimiter
+
+# Shared rate limiter for all Pexels API calls in this module
+_pexels_limiter = RateLimiter(
+    max_requests=200,
+    window_seconds=3600,
+    headroom=20,
+    name="Pexels",
+)
 
 
 def _pexels_headers() -> dict:
@@ -22,7 +33,10 @@ def search_videos(query: str, per_page: int = 15, orientation: str = "landscape"
     """
     Search Pexels for videos matching a query.
     Returns the raw list of video objects from the API response.
+    Automatically respects the Pexels rate limit (200 req/hour).
     """
+    _pexels_limiter.wait_if_needed()
+
     params = {
         "query": query,
         "per_page": per_page,
@@ -36,6 +50,8 @@ def search_videos(query: str, per_page: int = 15, orientation: str = "landscape"
         timeout=30,
     )
     resp.raise_for_status()
+
+    _pexels_limiter.record()
     return resp.json().get("videos", [])
 
 
@@ -105,6 +121,9 @@ def find_footage_for_segments(
         - "footage_path": local Path to the downloaded MP4
         - "footage_duration": duration of the source clip in seconds
         - "pexels_video_id": the Pexels video ID (for attribution)
+        - "pexels_video_url": link to the video on Pexels
+        - "pexels_videographer": name of the videographer
+        - "pexels_videographer_url": link to their Pexels profile
 
     Also returns the enriched segment list.
     """
@@ -129,6 +148,9 @@ def find_footage_for_segments(
             seg["footage_path"] = None
             seg["footage_duration"] = 0
             seg["pexels_video_id"] = None
+            seg["pexels_video_url"] = None
+            seg["pexels_videographer"] = None
+            seg["pexels_videographer_url"] = None
             continue
 
         # Score and sort, skipping already-used videos for variety
@@ -153,6 +175,9 @@ def find_footage_for_segments(
             seg["footage_path"] = None
             seg["footage_duration"] = 0
             seg["pexels_video_id"] = None
+            seg["pexels_video_url"] = None
+            seg["pexels_videographer"] = None
+            seg["pexels_videographer_url"] = None
             continue
 
         # Download
@@ -169,10 +194,13 @@ def find_footage_for_segments(
         seg["footage_path"] = str(dest)
         seg["footage_duration"] = best_video.get("duration", 0)
         seg["pexels_video_id"] = video_id
-
-        # Respect Pexels rate limits (200 req/hour ≈ 1 req per 18s, but we're well under)
-        time.sleep(0.5)
+        seg["pexels_video_url"] = best_video.get("url", "")
+        seg["pexels_videographer"] = best_video.get("user", {}).get("name", "Unknown")
+        seg["pexels_videographer_url"] = best_video.get("user", {}).get("url", "")
 
     found = sum(1 for s in segments if s.get("footage_path"))
-    print(f"[Footage Finder] Found footage for {found}/{len(segments)} segments.")
+    print(
+        f"[Footage Finder] Found footage for {found}/{len(segments)} segments. "
+        f"({_pexels_limiter.requests_used} Pexels API calls used this hour)"
+    )
     return segments

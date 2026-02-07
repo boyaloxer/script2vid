@@ -24,6 +24,44 @@ from src.timeline_builder import build_timeline
 from src.video_assembler import assemble_video
 
 
+def _generate_credits(segments: list[dict], credits_dir: Path) -> Path | None:
+    """
+    Generate a credits.txt file listing Pexels videographer attributions.
+    Saved in the project's credits folder for easy copy-paste into descriptions.
+    """
+    credits_path = credits_dir / "credits.txt"
+
+    lines = [
+        "=== Video Credits ===",
+        "Footage provided by Pexels (https://www.pexels.com)",
+        "",
+    ]
+
+    has_credits = False
+    for seg in segments:
+        videographer = seg.get("pexels_videographer")
+        video_url = seg.get("pexels_video_url")
+        profile_url = seg.get("pexels_videographer_url")
+
+        if not videographer or not video_url:
+            continue
+
+        has_credits = True
+        seg_id = seg.get("segment_id", "?")
+        lines.append(f"Segment {seg_id} — {videographer}")
+        lines.append(f"  Video: {video_url}")
+        if profile_url:
+            lines.append(f"  Profile: {profile_url}")
+        lines.append("")
+
+    if not has_credits:
+        return None
+
+    credits_path.write_text("\n".join(lines), encoding="utf-8")
+    print(f"[Credits] Saved attribution file to {credits_path}")
+    return credits_path
+
+
 def _next_version_name(output_dir: Path, project_name: str) -> str:
     """
     Auto-version output files so re-runs don't overwrite previous videos.
@@ -58,13 +96,35 @@ def _derive_project_name(script_file: str | None, script_text: str) -> str:
     return slug or "untitled"
 
 
-def run_pipeline(script_text: str, project_name: str) -> Path:
+def _load_json(path: Path) -> any:
+    """Load a JSON file, returning None if it doesn't exist or is invalid."""
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return None
+
+
+def run_pipeline(
+    script_text: str,
+    project_name: str,
+    fresh: bool = False,
+    quality: str = "final",
+) -> Path:
     """
     Execute the full script-to-video pipeline.
+
+    Supports checkpoint/resume: if intermediate files from a previous run
+    exist in the project folder, completed stages are skipped automatically.
+    Use fresh=True to force re-running all stages from scratch.
 
     Args:
         script_text: The raw video script.
         project_name: Name for the project folder and output video.
+        fresh: If True, ignore cached intermediate files and re-run everything.
+        quality: "draft" for fast renders, "final" for production quality.
 
     Returns:
         Path to the rendered output video.
@@ -77,9 +137,12 @@ def run_pipeline(script_text: str, project_name: str) -> Path:
     clips_dir = paths["clips_dir"]
     audio_dir = paths["audio_dir"]
     output_dir = paths["output_dir"]
+    credits_dir = paths["credits_dir"]
 
     print(f"\nProject: {project_name}")
     print(f"Workspace: {project_dir}")
+    if fresh:
+        print("Mode: FRESH (ignoring cached stages)")
 
     def _save_json(data, name: str) -> Path:
         """Save intermediate data to project folder for debugging."""
@@ -88,48 +151,79 @@ def run_pipeline(script_text: str, project_name: str) -> Path:
             json.dump(data, f, indent=2, default=str)
         return path
 
+    def _has_checkpoint(name: str) -> bool:
+        """Check if a checkpoint file exists (and we're not in fresh mode)."""
+        if fresh:
+            return False
+        return (project_dir / name).exists()
+
     # ──────────────────────────────────────────────
     # Stage 1: Script Analysis
     # ──────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("STAGE 1: Script Analysis")
-    print("=" * 60)
-    segments = analyze_script(script_text)
-    _save_json(segments, "1_segments.json")
+    if _has_checkpoint("1_segments.json"):
+        print("STAGE 1: Script Analysis [CACHED — skipping]")
+        segments = _load_json(project_dir / "1_segments.json")
+    else:
+        print("STAGE 1: Script Analysis")
+        print("=" * 60)
+        segments = analyze_script(script_text)
+        _save_json(segments, "1_segments.json")
 
     # ──────────────────────────────────────────────
     # Stage 2: Footage Retrieval
     # ──────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("STAGE 2: Footage Retrieval")
-    print("=" * 60)
-    segments = find_footage_for_segments(segments, clips_dir)
-    _save_json(segments, "2_segments_with_footage.json")
+    if _has_checkpoint("2_segments_with_footage.json"):
+        print("STAGE 2: Footage Retrieval [CACHED — skipping]")
+        segments = _load_json(project_dir / "2_segments_with_footage.json")
+    else:
+        print("STAGE 2: Footage Retrieval")
+        print("=" * 60)
+        segments = find_footage_for_segments(segments, clips_dir)
+        _save_json(segments, "2_segments_with_footage.json")
+
+    # Generate credits file for Pexels attribution
+    _generate_credits(segments, credits_dir)
 
     # ──────────────────────────────────────────────
     # Stage 3: Voiceover Generation + Timestamps
     # ──────────────────────────────────────────────
+    audio_path = audio_dir / "narration.mp3"
     print("\n" + "=" * 60)
-    print("STAGE 3: Voiceover Generation")
-    print("=" * 60)
+    if (
+        _has_checkpoint("3_segments_with_timing.json")
+        and _has_checkpoint("3_alignment.json")
+        and audio_path.exists()
+    ):
+        print("STAGE 3: Voiceover Generation [CACHED — skipping]")
+        segments = _load_json(project_dir / "3_segments_with_timing.json")
+        alignment = _load_json(project_dir / "3_alignment.json")
+    else:
+        print("STAGE 3: Voiceover Generation")
+        print("=" * 60)
 
-    # Reconstruct the full script from segments to ensure alignment
-    full_script = " ".join(seg["text"] for seg in segments)
-    audio_path, alignment = generate_voiceover(full_script, audio_dir)
-    _save_json(alignment, "3_alignment.json")
+        # Reconstruct the full script from segments to ensure alignment
+        full_script = " ".join(seg["text"] for seg in segments)
+        audio_path, alignment = generate_voiceover(full_script, audio_dir)
+        _save_json(alignment, "3_alignment.json")
 
-    # Map timing back onto segments (pass audio_path so we can get total duration)
-    segments = map_segments_to_time_ranges(segments, alignment, audio_path)
-    _save_json(segments, "3_segments_with_timing.json")
+        # Map timing back onto segments
+        segments = map_segments_to_time_ranges(segments, alignment, audio_path)
+        _save_json(segments, "3_segments_with_timing.json")
 
     # ──────────────────────────────────────────────
     # Stage 4a: Timeline Assembly (AI → EDL)
     # ──────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("STAGE 4: Timeline Assembly")
-    print("=" * 60)
-    edl = build_timeline(segments)
-    _save_json(edl, "4_edl.json")
+    if _has_checkpoint("4_edl.json"):
+        print("STAGE 4: Timeline Assembly [CACHED — skipping]")
+        edl = _load_json(project_dir / "4_edl.json")
+    else:
+        print("STAGE 4: Timeline Assembly")
+        print("=" * 60)
+        edl = build_timeline(segments)
+        _save_json(edl, "4_edl.json")
 
     # ──────────────────────────────────────────────
     # Stage 4b + 5: Video Assembly & Rendering
@@ -138,7 +232,7 @@ def run_pipeline(script_text: str, project_name: str) -> Path:
     print("STAGE 5: Video Rendering")
     print("=" * 60)
     output_name = _next_version_name(output_dir, project_name)
-    output_path = assemble_video(edl, audio_path, output_dir, output_name)
+    output_path = assemble_video(edl, audio_path, output_dir, output_name, quality=quality)
 
     elapsed = time.time() - total_start
     print("\n" + "=" * 60)
@@ -163,6 +257,17 @@ def main():
         type=str,
         help="Pass the script text directly as a string.",
     )
+    parser.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore cached intermediate files and re-run all stages.",
+    )
+    parser.add_argument(
+        "--quality",
+        choices=["draft", "final"],
+        default="final",
+        help="Render quality: 'draft' for fast renders (~3-5x faster), 'final' for production (default).",
+    )
     args = parser.parse_args()
 
     if args.script:
@@ -185,7 +290,7 @@ def main():
         sys.exit(1)
 
     project_name = _derive_project_name(script_file, script_text)
-    run_pipeline(script_text, project_name)
+    run_pipeline(script_text, project_name, fresh=args.fresh, quality=args.quality)
 
 
 if __name__ == "__main__":
