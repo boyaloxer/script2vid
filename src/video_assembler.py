@@ -15,13 +15,11 @@ from moviepy import (
     VideoFileClip,
     AudioFileClip,
     ColorClip,
-    CompositeVideoClip,
-    CompositeAudioClip,
     concatenate_videoclips,
     vfx,
 )
 
-from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS, OUTPUT_DIR
+from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
 
 
 def _load_and_trim_clip(entry: dict) -> VideoFileClip | ColorClip:
@@ -45,6 +43,9 @@ def _load_and_trim_clip(entry: dict) -> VideoFileClip | ColorClip:
         ).with_duration(target_dur).with_fps(OUTPUT_FPS)
 
     clip = VideoFileClip(entry["footage_file"])
+
+    # Strip clip audio — only the narrator's voice should be heard
+    clip = clip.without_audio()
 
     # Trim to the specified window
     trim_start = entry.get("footage_trim_start", 0)
@@ -104,7 +105,7 @@ def _resize_and_crop(clip: VideoFileClip) -> VideoFileClip:
     return clip
 
 
-def assemble_video(edl: list[dict], audio_path: Path, output_name: str = "final_video.mp4") -> Path:
+def assemble_video(edl: list[dict], audio_path: Path, output_dir: Path, output_name: str = "final_video.mp4") -> Path:
     """
     Execute the EDL: load clips, apply transitions, overlay audio, render.
 
@@ -141,21 +142,13 @@ def assemble_video(edl: list[dict], audio_path: Path, output_name: str = "final_
     print("[Video Assembler] Concatenating clips...")
     video = concatenate_videoclips(clips, method="compose")
 
-    # Overlay narration audio
+    # Overlay narration audio (clip audio is stripped — narrator only)
     print("[Video Assembler] Overlaying narration audio...")
     narration = AudioFileClip(str(audio_path))
-
-    # If there's original clip audio, mix it low under the narration
-    if video.audio is not None:
-        # Lower original clip audio to 10% volume
-        bg_audio = video.audio * 0.1
-        mixed_audio = CompositeAudioClip([narration, bg_audio])
-        video = video.with_audio(mixed_audio)
-    else:
-        video = video.with_audio(narration)
+    video = video.with_audio(narration)
 
     # Render
-    output_path = OUTPUT_DIR / output_name
+    output_path = output_dir / output_name
     print(f"[Video Assembler] Rendering to {output_path}...")
     video.write_videofile(
         str(output_path),

@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 import requests
 
-from src.config import PEXELS_API_KEY, PEXELS_BASE_URL, CLIPS_DIR
+from src.config import PEXELS_API_KEY, PEXELS_BASE_URL
 
 
 def _pexels_headers() -> dict:
@@ -95,6 +95,7 @@ def download_clip(url: str, dest: Path) -> Path:
 
 def find_footage_for_segments(
     segments: list[dict],
+    clips_dir: Path,
     used_video_ids: set | None = None,
 ) -> list[dict]:
     """
@@ -156,7 +157,7 @@ def find_footage_for_segments(
 
         # Download
         video_id = best_video["id"]
-        dest = CLIPS_DIR / f"seg{seg['segment_id']}_{video_id}.mp4"
+        dest = clips_dir / f"seg{seg['segment_id']}_{video_id}.mp4"
 
         if not dest.exists():
             print(f"[Footage Finder]   Downloading clip {video_id}...")

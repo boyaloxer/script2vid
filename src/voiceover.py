@@ -14,11 +14,10 @@ from src.config import (
     ELEVENLABS_API_KEY,
     ELEVENLABS_BASE_URL,
     ELEVENLABS_VOICE_ID,
-    AUDIO_DIR,
 )
 
 
-def generate_voiceover(script_text: str) -> tuple[Path, dict]:
+def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     """
     Generate narration audio with character-level timestamps.
 
@@ -58,7 +57,7 @@ def generate_voiceover(script_text: str) -> tuple[Path, dict]:
 
     # Decode and save audio
     audio_bytes = base64.b64decode(data["audio_base64"])
-    audio_path = AUDIO_DIR / "narration.mp3"
+    audio_path = audio_dir / "narration.mp3"
     audio_path.write_bytes(audio_bytes)
     print(f"[Voiceover] Saved narration audio to {audio_path}")
 

@@ -42,10 +42,32 @@ OUTPUT_FPS = int(os.getenv("OUTPUT_FPS", "30"))
 # Paths
 # ---------------------------------------------------------------------------
 WORK_DIR = _project_root / "workspace"
-CLIPS_DIR = WORK_DIR / "clips"
-AUDIO_DIR = WORK_DIR / "audio"
-OUTPUT_DIR = WORK_DIR / "output"
+WORK_DIR.mkdir(parents=True, exist_ok=True)
 
-# Create working directories on import
-for _dir in (WORK_DIR, CLIPS_DIR, AUDIO_DIR, OUTPUT_DIR):
-    _dir.mkdir(parents=True, exist_ok=True)
+
+def create_project_dirs(project_name: str) -> dict:
+    """
+    Create a per-script project folder inside workspace.
+    Returns a dict of paths: project_dir, clips_dir, audio_dir, output_dir.
+
+    Structure:
+        workspace/
+        └── deep_thoughts_01/
+            ├── clips/
+            ├── audio/
+            └── output/
+    """
+    project_dir = WORK_DIR / project_name
+    clips_dir = project_dir / "clips"
+    audio_dir = project_dir / "audio"
+    output_dir = project_dir / "output"
+
+    for d in (project_dir, clips_dir, audio_dir, output_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    return {
+        "project_dir": project_dir,
+        "clips_dir": clips_dir,
+        "audio_dir": audio_dir,
+        "output_dir": output_dir,
+    }
