@@ -15,7 +15,7 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 - **Script Analysis** — AI decomposes script into visual segments with keywords, mood, and descriptions. Chunked processing for large scripts (5K chars/chunk with retry logic).
 - **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits.
 - **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts.
-- **Audio Normalization** — Post-generation mono conversion + EBU R128 loudness normalization to ensure consistent audio across chunks.
+- **Audio Mastering** — 3-stage post-processing chain: force mono (safety net), `dynaudnorm` (per-frame volume levelling to eliminate chunk-to-chunk differences and tame spikes), then `loudnorm` EBU R128 normalization (-16 LUFS, YouTube target). Output duplicated to stereo for universal playback compatibility.
 - **Slot-Based Timing** — Each clip fills its full time slot (speech + silence gap), keeping video in sync with audio.
 - **Timeline Assembly** — AI generates a structured JSON Edit Decision List (EDL) with trim points and transitions. Batched processing (25 segments/batch) for large videos.
 - **FFmpeg-Direct Rendering** — All video processing (trim, scale, crop, speed-adjust, concat, audio overlay) uses direct FFmpeg subprocess calls for speed and memory efficiency. No MoviePy rendering.
@@ -65,7 +65,7 @@ Sends the script to **ElevenLabs TTS** with `with_timestamps` enabled:
 - Returns narration audio + character-level timing data
 - Characters are reconstructed into word boundaries, then mapped to segments
 - Each segment gets a **full time slot**: from its `audio_start` to the next segment's `audio_start`
-- Post-processing: **mono conversion + EBU R128 loudness normalization** via FFmpeg
+- Post-processing: **3-stage audio mastering** via FFmpeg — force mono, `dynaudnorm` (per-frame levelling), `loudnorm` (EBU R128, -16 LUFS), then output as stereo
 
 ### 4. Timeline Assembly (AI Agent → EDL)
 
@@ -130,7 +130,7 @@ Output: workspace/{script_name}/output/{script_name}.mp4
 | **AI provider** | OpenAI-compatible API (Kimi K2.5 via Moonshot). Provider-agnostic — swap via `.env`. |
 | **Rendering engine** | FFmpeg-direct subprocess calls. MoviePy is a dependency but not used for rendering. |
 | **Segment timing** | Slot-based: each clip fills `audio_start → next segment's audio_start`. Eliminates drift. |
-| **Audio handling** | All clip audio muted. Only the narrator voiceover is heard. Mono + loudness normalized. |
+| **Audio handling** | All clip audio muted. Only the narrator voiceover is heard. Mastered via dynaudnorm + loudnorm, output as stereo. |
 | **Voice selection** | User-configurable `ELEVENLABS_VOICE_ID` in `.env`. |
 | **Output format** | 1080p MP4 (H.264) by default. Resolution/FPS configurable. |
 | **File organization** | Per-script project folders in `workspace/`. Auto-versioned output. |

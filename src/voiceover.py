@@ -29,21 +29,35 @@ _CHAR_LIMIT = 9500
 
 def _normalize_audio(audio_path: Path) -> None:
     """
-    Post-process narration audio in-place:
-      1. Convert to mono (eliminates channel-balance shifts between TTS chunks)
-      2. Apply EBU R128 loudness normalization (-16 LUFS, YouTube recommended)
+    Post-process narration audio in-place with a 3-stage filter chain:
 
-    Mono conversion is applied first so loudnorm analyses a single channel.
+      1. aformat  → force mono (safety net; ElevenLabs already outputs mono,
+                     but guards against any edge-case stereo chunks).
+      2. dynaudnorm → dynamic per-frame gain levelling.  Evens out volume
+                      differences between TTS chunks and tames transient spikes
+                      *before* the global normalizer sees the audio.
+      3. loudnorm → EBU R128 loudness normalization (-16 LUFS, YouTube target).
+                    dual_mono=true ensures correct measurement for mono audio.
+                    TP=-1.5 acts as a true-peak safety limiter.
+
+    Finally, -ac 2 duplicates the mono channel to both L+R so every player
+    routes audio to both ears.
     """
     temp_path = audio_path.with_suffix(".norm.mp3")
+    af_chain = (
+        "aformat=channel_layouts=mono,"
+        "dynaudnorm=framelen=500:gausssize=31:peak=0.95:maxgain=10,"
+        "loudnorm=I=-16:TP=-1.5:LRA=11:dual_mono=true"
+    )
     cmd = [
         "ffmpeg", "-y",
         "-i", str(audio_path),
-        "-af", "pan=mono|c0=0.5*c0+0.5*c1,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-af", af_chain,
+        "-ac", "2",   # duplicate mono to both L+R for universal playback
         "-q:a", "2",  # high-quality VBR MP3
         str(temp_path),
     ]
-    print("[Voiceover] Normalizing audio (mono + EBU R128 loudnorm)...")
+    print("[Voiceover] Normalizing audio (dynaudnorm + loudnorm + stereo)...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[Voiceover] WARNING: Audio normalization failed: {result.stderr[:300]}")

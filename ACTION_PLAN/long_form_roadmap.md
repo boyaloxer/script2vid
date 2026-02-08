@@ -226,7 +226,7 @@ several GB of RAM.
 | 5 | Render preset optimization | **DONE** — `--quality draft/final` flag |
 | 6 | Memory-efficient rendering | **DONE** — FFmpeg-direct replaced MoviePy entirely |
 | 6b | Chunked script analysis | **DONE** — 5K char chunks with retry logic (discovered during 1-hour test) |
-| 6c | Audio normalization | **DONE** — mono + EBU R128 loudnorm post-processing |
+| 6c | Audio mastering | **DONE** — 3-stage chain: force mono, dynaudnorm (per-frame levelling), loudnorm (EBU R128 -16 LUFS), stereo output |
 
 ---
 

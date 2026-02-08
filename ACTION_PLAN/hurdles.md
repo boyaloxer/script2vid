@@ -171,3 +171,34 @@ Users can also override via `FFMPEG_PATH` in `.env` if needed.
 2. User upgraded their ElevenLabs plan to get sufficient credits
 
 **Lesson:** For long-form content (1+ hour), ensure your ElevenLabs plan has at least 50K+ character credits available before running the pipeline.
+
+---
+
+## 15. Mono Audio Routing to One Channel on Playback
+
+**Symptom:** After normalizing the 1-hour video's audio to mono, the audio played through only the right ear/channel on headphones and some devices, instead of equally through both.
+
+**Root Cause:** A mono AAC audio track inside an MP4 container is a single channel. Different players and devices interpret mono audio inconsistently — some route it to center (both ears), others send it to one channel (typically right). This is a known quirk with mono audio in MP4 containers.
+
+Additionally, the original `pan=mono|c0=0.5*c0+0.5*c1` filter was being applied to already-mono input from ElevenLabs. Since `c1` doesn't exist on a mono signal, FFmpeg treated it as silence — the formula became `0.5 * audio + 0.5 * 0`, effectively **halving the volume**. `loudnorm` then had to boost the gain back up, introducing unnecessary processing.
+
+**Fix:** Two changes:
+1. Replaced `pan=mono` with `aformat=channel_layouts=mono` — uses FFmpeg's built-in mono conversion (safe no-op when input is already mono, no manual gain math)
+2. Added `-ac 2` to the output — duplicates the processed mono channel to both L and R, producing a stereo file where both channels are identical. Every player handles stereo correctly.
+
+---
+
+## 16. Volume Spikes Making Loudness Normalization Ineffective
+
+**Symptom:** Even after mono conversion and `loudnorm`, the audio had noticeable volume differences between TTS chunks. Loud spikes/peaks in certain sections anchored the normalization gain low, leaving quieter sections still too quiet.
+
+**Root Cause:** `loudnorm` is a *global* normalizer — it picks one overall gain for the entire file based on integrated loudness. If there are transient spikes, it must keep the gain conservative to prevent those peaks from clipping. This means chunk-to-chunk volume differences survive normalization.
+
+**Fix:** Added `dynaudnorm` (FFmpeg's dynamic audio normalizer) **before** `loudnorm` in the filter chain. `dynaudnorm` works frame-by-frame (500ms windows), dynamically boosting quiet sections and taming loud ones. By the time `loudnorm` runs, the signal is already levelled, so it can normalize accurately without being thrown off by peaks.
+
+The final 3-stage audio chain is:
+```
+aformat=channel_layouts=mono → dynaudnorm → loudnorm (EBU R128, -16 LUFS) → stereo output (-ac 2)
+```
+
+**Lesson:** For concatenated TTS audio, global normalization alone isn't enough. Dynamic per-frame levelling (`dynaudnorm`) must precede global normalization (`loudnorm`) to produce consistent results.

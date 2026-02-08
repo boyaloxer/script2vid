@@ -227,6 +227,7 @@ def _ffmpeg_add_audio(video_path: Path, audio_path: Path, output_path: Path) -> 
         "-i", str(audio_path),
         "-c:v", "copy",
         "-c:a", "aac",
+        "-ac", "2",       # force stereo — prevents mono routing issues on some players
         "-map", "0:v:0",
         "-map", "1:a:0",
         "-shortest",

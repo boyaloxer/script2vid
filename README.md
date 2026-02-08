@@ -23,7 +23,7 @@ All you need is **3 API keys** and **a script**. Everything else is automated.
 
 1. **Script Analysis** — An AI breaks your script into visual segments with search keywords (chunked for large scripts)
 2. **Footage Retrieval** — Searches Pexels for stock footage matching each segment (rate-limited, with automatic pause/resume)
-3. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps (chunked with Request Stitching for long scripts, then mono + loudness normalized)
+3. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps (chunked with Request Stitching for long scripts, then mastered via dynaudnorm + loudnorm for consistent volume)
 4. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using slot-based timing so footage stays in sync with narration (batched for large segment counts)
 5. **Video Rendering** — FFmpeg processes each clip individually, concatenates them, and overlays the narration audio (clip audio is muted — only the narrator is heard)
 
@@ -141,7 +141,7 @@ workspace/
 └── deep_thoughts_01/
     ├── clips/                        # Downloaded stock footage
     ├── audio/
-    │   └── narration.mp3             # Generated voiceover (mono, normalized)
+    │   └── narration.mp3             # Generated voiceover (mastered: dynaudnorm + loudnorm, stereo)
     ├── credits/
     │   └── credits.txt               # Pexels videographer attribution
     ├── output/
@@ -180,7 +180,7 @@ src/
 ├── rate_limiter.py      # Generic sliding-window rate limiter
 ├── script_analyzer.py   # Stage 1: Script → visual segments (chunked)
 ├── footage_finder.py    # Stage 2: Pexels search → download clips
-├── voiceover.py         # Stage 3: ElevenLabs TTS + timestamps + normalization
+├── voiceover.py         # Stage 3: ElevenLabs TTS + timestamps + audio mastering
 ├── timeline_builder.py  # Stage 4: AI → Edit Decision List (batched)
 └── video_assembler.py   # Stage 5: FFmpeg-direct → final MP4
 ```
