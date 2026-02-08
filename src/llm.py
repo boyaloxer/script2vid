@@ -12,7 +12,7 @@ def chat(
     system_prompt: str,
     user_prompt: str,
     temperature: float | None = None,
-    max_tokens: int = 16384,
+    max_tokens: int = 32768,
 ) -> str:
     """
     Send a chat completion request and return the assistant's reply text.
@@ -48,7 +48,7 @@ def chat(
             "Content-Type": "application/json",
         },
         json=body,
-        timeout=300,
+        timeout=600,
     )
     response.raise_for_status()
     return response.json()["choices"][0]["message"]["content"]

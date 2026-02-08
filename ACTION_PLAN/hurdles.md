@@ -120,3 +120,54 @@ Users can also override via `FFMPEG_PATH` in `.env` if needed.
 **Root Cause:** PowerShell (the default shell on this Windows system) doesn't support `&&` as a command chain operator in older versions.
 
 **Fix:** Use semicolons (`;`) for PowerShell, or use the shell tool's `working_directory` parameter instead of `cd && command`.
+
+---
+
+## 11. UnicodeEncodeError on Windows Console
+
+**Symptom:** `UnicodeEncodeError: 'charmap' codec can't encode character '\u2192'` during Stage 5 rendering progress output.
+
+**Root Cause:** A print statement in `video_assembler.py` used the Unicode arrow character `→` (`\u2192`). The Windows console's default encoding (`cp1252`) doesn't support this character.
+
+**Fix:** Replaced `→` with the ASCII equivalent `->` in the progress message f-string.
+
+---
+
+## 12. LLM Timeout on Large Script Analysis (49K chars)
+
+**Symptom:** `requests.exceptions.ReadTimeout` during Stage 1 when processing a 49,000-character script for a 1-hour video. The entire script was sent as a single LLM call.
+
+**Root Cause:** The script analyzer had no chunking — it sent the full script text to the LLM in one request. For a 49K-char script, the LLM needed to generate a massive JSON response (hundreds of segments), which exceeded the 300-second timeout.
+
+**Fix:** Implemented chunked script analysis in `script_analyzer.py`:
+- Scripts over 5,000 chars are split at paragraph boundaries into ~5K-char chunks
+- Each chunk is processed in a separate LLM call
+- Segments from all chunks are merged and renumbered sequentially
+- Added retry logic (up to 3 attempts with backoff) for each chunk
+
+---
+
+## 13. LLM JSON Truncation on Script Analysis Chunks
+
+**Symptom:** `json.decoder.JSONDecodeError: Unterminated string starting at: line 271 column 27` — the LLM returned truncated JSON that couldn't be parsed.
+
+**Root Cause:** Even after chunking, the initial 10K-char chunk size produced JSON responses large enough to hit the LLM's output token limit. The response was cut off mid-string.
+
+**Fix:** Three changes:
+1. Reduced chunk size from 10K to 5K chars — each chunk now produces ~15-20 segments (much less JSON output)
+2. Increased `max_tokens` from 16,384 to 32,768 for more output headroom
+3. Increased LLM timeout from 300s to 600s for safety
+
+---
+
+## 14. ElevenLabs Quota Exceeded (401 on Chunk 2)
+
+**Symptom:** `401 Client Error: Unauthorized` on the second TTS chunk. First chunk succeeded. Error detail: `quota_exceeded — This request exceeds your quota of 40000. You have 4712 credits remaining, while 9469 credits are required.`
+
+**Root Cause:** The ElevenLabs free/starter plan has a 40,000 character monthly quota. A 1-hour script (~49K chars) exceeds this limit. The first chunk consumed most of the quota, and the second chunk was rejected.
+
+**Fix:** Two changes:
+1. Added detailed error reporting in `voiceover.py` to show the actual ElevenLabs error body (previously it just showed "401 Unauthorized" with no detail)
+2. User upgraded their ElevenLabs plan to get sufficient credits
+
+**Lesson:** For long-form content (1+ hour), ensure your ElevenLabs plan has at least 50K+ character credits available before running the pipeline.

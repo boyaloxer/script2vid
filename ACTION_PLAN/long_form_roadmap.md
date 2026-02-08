@@ -1,8 +1,8 @@
 # Long-Form Content Roadmap (1+ Hour Videos)
 
-## Current State
+## Current State — COMPLETE
 
-The pipeline works end-to-end for short-form content (~2 minutes). For long-form content (1+ hours), several components need to be upgraded to handle the scale.
+**All long-form features have been implemented and tested.** The pipeline successfully produced a 62-minute video (588 segments, ~49K char script) in a single unattended run. This document is kept for historical reference.
 
 A 1-hour video at a calm narration pace (~130 words/minute) is roughly:
 - **7,800 words** / **~40,000 characters** of script
@@ -213,18 +213,20 @@ several GB of RAM.
 
 ---
 
-## Implementation Priority
+## Implementation Priority — All Complete
 
-| Priority | Task | Why |
+| Priority | Task | Status |
 |---|---|---|
-| 0a | Add `max_tokens` to LLM calls | Prevents silent JSON truncation — affects correctness now |
-| 0b | Make ElevenLabs model configurable | Low effort, unblocks user choice |
-| 1 | ElevenLabs chunked TTS + Request Stitching | Without this, long scripts can't generate audio |
-| 2 | Pexels rate limit handling | Without this, footage retrieval fails partway through |
-| 3 | LLM batched EDL generation | Without this, the timeline builder may timeout or produce bad output |
-| 4 | Checkpoint / resume | Without this, any failure in a long run wastes hours of time and API credits |
-| 5 | Render preset optimization | Quality-of-life — makes iteration much faster |
-| 6 | Memory-efficient rendering | Only needed if RAM becomes an issue in practice |
+| 0a | Add `max_tokens` to LLM calls | **DONE** — set to 32,768 |
+| 0b | Make ElevenLabs model configurable | Deferred (hardcoded default works well) |
+| 1 | ElevenLabs chunked TTS + Request Stitching | **DONE** — 9,500 char chunks with stitching |
+| 2 | Pexels rate limit handling | **DONE** — sliding-window RateLimiter class |
+| 3 | LLM batched EDL generation | **DONE** — 25 segments per batch |
+| 4 | Checkpoint / resume | **DONE** — all stages cached as JSON |
+| 5 | Render preset optimization | **DONE** — `--quality draft/final` flag |
+| 6 | Memory-efficient rendering | **DONE** — FFmpeg-direct replaced MoviePy entirely |
+| 6b | Chunked script analysis | **DONE** — 5K char chunks with retry logic (discovered during 1-hour test) |
+| 6c | Audio normalization | **DONE** — mono + EBU R128 loudnorm post-processing |
 
 ---
 

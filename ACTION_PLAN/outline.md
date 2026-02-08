@@ -6,25 +6,33 @@ script2vid is an automated video production pipeline that takes a written script
 
 ---
 
-## Current Status: Working Prototype
+## Current Status: Production-Ready
 
-The core pipeline is **built and tested**. It successfully produces short-form videos (~2 minutes) end-to-end with accurate audio/video sync. The next milestone is scaling to long-form content (1+ hours).
+The pipeline is **fully built, tested, and production-ready** for both short-form and long-form content. It has been successfully tested on videos ranging from 2 minutes to over 1 hour (62 minutes).
 
 ### What's Been Built
 
-- **Script Analysis** — AI decomposes script into visual segments with keywords, mood, and descriptions
-- **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats
-- **Voiceover Generation** — ElevenLabs TTS with character-level timestamps, reconstructed to word/segment boundaries
-- **Slot-Based Timing** — Each clip fills its full time slot (speech + silence gap), keeping video in sync with audio
-- **Timeline Assembly** — AI generates a structured JSON Edit Decision List (EDL) with trim points and transitions
-- **Video Rendering** — MoviePy executes the EDL, mutes clip audio (narrator only), renders to 1080p MP4
-- **Per-Script Organization** — Each script gets its own workspace folder with clips, audio, output, and debug files
-- **Auto-Versioning** — Re-running the same script creates v2, v3, etc. so you can compare and pick the best
+- **Script Analysis** — AI decomposes script into visual segments with keywords, mood, and descriptions. Chunked processing for large scripts (5K chars/chunk with retry logic).
+- **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits.
+- **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts.
+- **Audio Normalization** — Post-generation mono conversion + EBU R128 loudness normalization to ensure consistent audio across chunks.
+- **Slot-Based Timing** — Each clip fills its full time slot (speech + silence gap), keeping video in sync with audio.
+- **Timeline Assembly** — AI generates a structured JSON Edit Decision List (EDL) with trim points and transitions. Batched processing (25 segments/batch) for large videos.
+- **FFmpeg-Direct Rendering** — All video processing (trim, scale, crop, speed-adjust, concat, audio overlay) uses direct FFmpeg subprocess calls for speed and memory efficiency. No MoviePy rendering.
+- **Per-Script Organization** — Each script gets its own workspace folder with clips, audio, credits, output, and debug files.
+- **Auto-Versioning** — Re-running the same script creates v2, v3, etc.
+- **Checkpoint/Resume** — Completed pipeline stages are cached. Re-runs skip finished stages automatically.
+- **Rendering Quality Options** — `--quality draft` (ultrafast) for iteration, `--quality final` (medium) for production.
+- **Pexels Attribution** — Automatic `credits.txt` generation with videographer details.
 
 ### What's Been Tested
 
-- 2-minute "Deep Thoughts For Sleep" script: 20 segments, 20 clips downloaded, audio synced, rendered successfully
-- Timing fix verified: slot-based duration eliminated audio drift issue from initial prototype
+| Test | Script | Segments | Duration | Result |
+|------|--------|----------|----------|--------|
+| Short-form | `deep_thoughts_01.txt` | 20 | ~2 min | Pass |
+| Mid-form | `deep_thoughts_02.txt` | ~80 | ~13 min | Pass |
+| Mid-form (FFmpeg-direct) | `deep_thoughts_03.txt` | ~60 | ~9 min | Pass (~70s render) |
+| **Long-form (production test)** | `deep_thoughts_04.txt` | **588** | **~62 min** | **Pass (~71 min total pipeline)** |
 
 ---
 
@@ -32,8 +40,9 @@ The core pipeline is **built and tested**. It successfully produces short-form v
 
 ### 1. Script Analysis
 
-An AI agent ingests the raw script and breaks it into **visual segments** — logical chunks based on topic, scene, or idea. For each segment, the agent extracts:
+An AI agent ingests the raw script and breaks it into **visual segments**. For large scripts (10K+ chars), the text is split into ~5K-char chunks at paragraph boundaries and each chunk is processed in a separate LLM call with retry logic. Segments are renumbered sequentially after merging.
 
+For each segment, the agent extracts:
 - **Key visual concepts** (e.g., "person lying awake in dark bedroom")
 - **Mood / tone** (e.g., contemplative, melancholic, wondrous)
 - **Search keywords** optimized for stock footage queries (2-4 phrases per segment)
@@ -41,36 +50,41 @@ An AI agent ingests the raw script and breaks it into **visual segments** — lo
 ### 2. Footage Retrieval & Selection
 
 For each segment, queries the **Pexels Video API** using the extracted keywords:
-
 - Scores and ranks results for relevance
 - Avoids reusing the same clip across segments
 - Downloads the best-matching MP4 and caches it in the project folder
 - Retries with broader keywords if initial search returns nothing
+- Integrated **sliding-window rate limiter** (200 req/hr) with automatic pause and resume
+- Captures videographer attribution for Pexels credits
 
 ### 3. Voiceover Generation + Timestamp Extraction
 
-Sends the full script to **ElevenLabs TTS** with `with_timestamps` enabled:
-
-- Returns the narration audio + character-level timing data
-- Characters are reconstructed into word boundaries
-- Each segment is mapped to a **full time slot**: from its `audio_start` to the next segment's `audio_start`
-- This slot-based timing ensures clips fill the silence gaps and stay in sync
+Sends the script to **ElevenLabs TTS** with `with_timestamps` enabled:
+- Scripts over 9,500 chars are automatically **chunked** at sentence boundaries
+- Uses **Request Stitching** (`previous_request_ids`) for consistent voice across chunks
+- Returns narration audio + character-level timing data
+- Characters are reconstructed into word boundaries, then mapped to segments
+- Each segment gets a **full time slot**: from its `audio_start` to the next segment's `audio_start`
+- Post-processing: **mono conversion + EBU R128 loudness normalization** via FFmpeg
 
 ### 4. Timeline Assembly (AI Agent → EDL)
 
-**4a.** AI agent receives segments with slot timing + footage metadata, outputs a **JSON Edit Decision List**:
+AI agent receives segments with slot timing + footage metadata, outputs a **JSON Edit Decision List**:
 - Trim points for each clip (which portion of the source footage to use)
 - Transition types (cut or crossfade)
 - Clip durations matched to slot durations (not just speech durations)
+- Large segment counts (30+) are processed in **batches of 25** to avoid LLM output truncation
 
-**4b.** Deterministic Python code executes the EDL using MoviePy:
-- Clips are trimmed, stripped of audio, resized to 1080p, and concatenated
-- Narration audio is overlaid as the only audio track
-- Same EDL always produces the same output
+### 5. Video Assembly & Rendering (FFmpeg-Direct)
 
-### 5. Video Rendering
+Direct FFmpeg subprocess calls process each clip individually:
+- **Per-clip processing**: trim, speed-adjust, scale, crop to 1080p, strip audio, encode to temp MP4
+- **Concat**: All temp clips joined via FFmpeg concat demuxer (`-c copy`, no re-encoding)
+- **Audio overlay**: Narration audio overlaid onto silent video (`-c:v copy`, no video re-encode)
+- **Cleanup**: Temp files removed automatically
+- **Quality presets**: `draft` (ultrafast, high threads) or `final` (medium preset)
 
-MoviePy (built on FFmpeg) renders the final composition to MP4 (H.264 video, AAC audio).
+This approach is ~10-20x faster than MoviePy-based rendering and uses minimal memory (one FFmpeg process at a time).
 
 ---
 
@@ -80,54 +94,60 @@ MoviePy (built on FFmpeg) renders the final composition to MP4 (H.264 video, AAC
 Input: Script (.txt file)
   │
   ▼
-┌─────────────────────┐
-│  1. Script Analysis  │  AI → visual segments + keywords
-└────────┬────────────┘
+┌─────────────────────────────┐
+│  1. Script Analysis (AI)    │  Chunked for large scripts
+└────────┬────────────────────┘
          │
          ▼
 ┌─────────────────────────┐     ┌──────────────────────────┐
 │  2. Footage Retrieval   │     │  3. Voiceover Generation  │
 │     (Pexels API)        │     │     (ElevenLabs API)      │
+│     + Rate Limiter      │     │     + Request Stitching   │
+│     + Attribution       │     │     + Audio Normalization  │
 └────────┬────────────────┘     └────────┬─────────────────┘
          │                               │
          ▼                               ▼
 ┌──────────────────────────────────────────┐
-│       4. Timeline Assembly (AI → EDL)    │  Slot-based timing
+│   4. Timeline Assembly (AI → EDL)        │  Batched, slot-based timing
 └────────────────┬─────────────────────────┘
                  │
                  ▼
 ┌──────────────────────────────────────────┐
-│       5. Video Rendering (MoviePy)       │  Narrator audio only
+│   5. Video Rendering (FFmpeg-Direct)     │  Per-clip + concat + audio
 └──────────────────────────────────────────┘
   │
   ▼
 Output: workspace/{script_name}/output/{script_name}.mp4
+        workspace/{script_name}/credits/credits.txt
 ```
 
 ---
 
 ## Key Design Decisions
 
-| Decision | Status | Choice |
-|---|---|---|
-| **AI provider** | Decided | OpenAI-compatible API (Kimi K2.5 via Moonshot). Provider-agnostic — swap via `.env`. |
-| **Video editing library** | Decided | MoviePy 2.x (Python, built on FFmpeg). AI outputs JSON EDL; MoviePy executes it. |
-| **Segment timing** | Decided | Slot-based: each clip fills `audio_start → next segment's audio_start`. Eliminates drift. |
-| **Audio handling** | Decided | All clip audio muted. Only the narrator voiceover is heard. |
-| **Voice selection** | Decided | User-configurable `ELEVENLABS_VOICE_ID` in `.env`. |
-| **Output format** | Decided | 1080p MP4 (H.264) by default. Resolution/FPS configurable. |
-| **File organization** | Decided | Per-script project folders in `workspace/`. Auto-versioned output (v2, v3, etc.). |
+| Decision | Choice |
+|---|---|
+| **AI provider** | OpenAI-compatible API (Kimi K2.5 via Moonshot). Provider-agnostic — swap via `.env`. |
+| **Rendering engine** | FFmpeg-direct subprocess calls. MoviePy is a dependency but not used for rendering. |
+| **Segment timing** | Slot-based: each clip fills `audio_start → next segment's audio_start`. Eliminates drift. |
+| **Audio handling** | All clip audio muted. Only the narrator voiceover is heard. Mono + loudness normalized. |
+| **Voice selection** | User-configurable `ELEVENLABS_VOICE_ID` in `.env`. |
+| **Output format** | 1080p MP4 (H.264) by default. Resolution/FPS configurable. |
+| **File organization** | Per-script project folders in `workspace/`. Auto-versioned output. |
+| **Long-form support** | Chunking at every stage (script analysis, TTS, EDL generation). Rate limiting for Pexels. |
+| **Checkpoint/resume** | All intermediate data saved as JSON. Completed stages skipped on re-run. |
 
 ---
 
-## Next Milestone: Long-Form Content (1+ Hour Videos)
+## Potential Future Features
 
-See `long_form_roadmap.md` for the full plan. Key items (refined after deep research):
-
-1. **Immediate fixes** — Add `max_tokens` to LLM calls (prevents JSON truncation), make ElevenLabs model configurable in `.env`
-2. **ElevenLabs chunked TTS with Request Stitching** — Split long scripts into ~10K-char chunks, use `previous_request_ids` to maintain voice consistency across chunks
-3. **Pexels rate limiter** — Sliding-window tracker to auto-pause at 180 req/hour; also can request unlimited access for free
-4. **LLM batched EDL generation** — Process 20–30 segments per batch to avoid output truncation
-5. **Checkpoint/resume** — Skip completed stages on re-run so failures don't waste hours of API calls
-6. **Render optimization** — Faster FFmpeg presets, auto-detect CPU threads, optional GPU encoding
-7. **Memory-efficient rendering** — Batch-render + FFmpeg concat for 100+ clip videos
+| Feature | Description |
+|---|---|
+| **Automatic transitions** | Crossfades, dissolves, or other transitions between clips (currently cuts only in practice) |
+| **Background music** | Add a subtle ambient track under the narration |
+| **Subtitle generation** | Burn captions into the video using the timestamp data we already have |
+| **Thumbnail generation** | Auto-generate a thumbnail from the best frame |
+| **Batch processing** | Run multiple scripts in sequence overnight |
+| **Web UI** | Simple interface for uploading scripts and downloading videos |
+| **Cost estimation** | Log estimated API costs before running, so the user can confirm |
+| **GPU-accelerated encoding** | Use NVENC/QSV for faster rendering on supported hardware |

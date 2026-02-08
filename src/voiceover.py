@@ -6,9 +6,14 @@ For scripts longer than the per-request character limit (10,000 for
 eleven_multilingual_v2), automatically chunks the text and uses ElevenLabs'
 Request Stitching (previous_request_ids) to maintain consistent voice prosody
 across chunks.
+
+After generation, audio is post-processed with FFmpeg:
+  1. Mono conversion — eliminates channel-balance shifts between chunks
+  2. EBU R128 loudness normalization — ensures consistent perceived volume
 """
 
 import base64
+import subprocess
 from pathlib import Path
 import requests
 
@@ -20,6 +25,34 @@ from src.config import (
 
 # eleven_multilingual_v2 has a 10,000 char limit; leave buffer
 _CHAR_LIMIT = 9500
+
+
+def _normalize_audio(audio_path: Path) -> None:
+    """
+    Post-process narration audio in-place:
+      1. Convert to mono (eliminates channel-balance shifts between TTS chunks)
+      2. Apply EBU R128 loudness normalization (-16 LUFS, YouTube recommended)
+
+    Mono conversion is applied first so loudnorm analyses a single channel.
+    """
+    temp_path = audio_path.with_suffix(".norm.mp3")
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(audio_path),
+        "-af", "pan=mono|c0=0.5*c0+0.5*c1,loudnorm=I=-16:TP=-1.5:LRA=11",
+        "-q:a", "2",  # high-quality VBR MP3
+        str(temp_path),
+    ]
+    print("[Voiceover] Normalizing audio (mono + EBU R128 loudnorm)...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[Voiceover] WARNING: Audio normalization failed: {result.stderr[:300]}")
+        temp_path.unlink(missing_ok=True)
+        return  # keep original audio as fallback
+
+    # Replace original with normalized version
+    temp_path.replace(audio_path)
+    print("[Voiceover] Audio normalized successfully.")
 
 
 def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
@@ -90,6 +123,14 @@ def _tts_request(
         json=body,
         timeout=300,
     )
+
+    if not resp.ok:
+        # Show the actual error body from ElevenLabs for easier debugging
+        try:
+            err_detail = resp.json()
+        except Exception:
+            err_detail = resp.text[:500]
+        print(f"[Voiceover] ElevenLabs API error {resp.status_code}: {err_detail}")
     resp.raise_for_status()
 
     data = resp.json()
@@ -108,6 +149,9 @@ def _tts_single(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     audio_path = audio_dir / "narration.mp3"
     audio_path.write_bytes(audio_bytes)
     print(f"[Voiceover] Saved narration audio to {audio_path}")
+
+    # Post-process: mono + loudness normalization
+    _normalize_audio(audio_path)
 
     if not alignment:
         print("[Voiceover] WARNING: No alignment data returned by ElevenLabs.")
@@ -198,6 +242,9 @@ def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
         f"[Voiceover] Saved combined narration "
         f"({cumulative_duration:.1f}s) to {audio_path}"
     )
+
+    # Post-process: mono + loudness normalization
+    _normalize_audio(audio_path)
 
     if not merged_alignment["characters"]:
         print("[Voiceover] WARNING: No alignment data returned by ElevenLabs.")
