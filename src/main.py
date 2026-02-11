@@ -14,7 +14,7 @@ import json
 import re
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from src.config import create_project_dirs
 from src.script_analyzer import analyze_script
@@ -177,6 +177,16 @@ def run_pipeline(
     if _has_checkpoint("2_segments_with_footage.json"):
         print("STAGE 2: Footage Retrieval [CACHED — skipping]")
         segments = _load_json(project_dir / "2_segments_with_footage.json")
+        # Resolve paths if workspace was copied from another OS (e.g. Windows → Mac).
+        # Use PureWindowsPath to extract filename — it handles both / and \
+        # separators, whereas PosixPath treats \ as a literal character.
+        for seg in segments:
+            fp = seg.get("footage_path")
+            if fp and not Path(fp).exists():
+                fname = PureWindowsPath(fp).name
+                fallback = clips_dir / fname
+                if fallback.exists():
+                    seg["footage_path"] = str(fallback)
     else:
         print("STAGE 2: Footage Retrieval")
         print("=" * 60)
@@ -232,7 +242,10 @@ def run_pipeline(
     print("STAGE 5: Video Rendering")
     print("=" * 60)
     output_name = _next_version_name(output_dir, project_name)
-    output_path = assemble_video(edl, audio_path, output_dir, output_name, quality=quality)
+    output_path = assemble_video(
+        edl, audio_path, output_dir, output_name,
+        quality=quality, clips_dir=clips_dir,
+    )
 
     elapsed = time.time() - total_start
     print("\n" + "=" * 60)

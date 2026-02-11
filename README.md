@@ -169,6 +169,14 @@ The pipeline is designed for long-form videos (1+ hours). Key features that enab
 
 **Estimated pipeline time for a 1-hour video:** ~4-5 hours (mostly Pexels API rate limiting).
 
+## Developing on Windows and macOS
+
+The codebase uses `pathlib.Path` and `subprocess` with `ffmpeg`/`ffprobe` (no `.exe`), so it runs on both Windows and macOS. Two things to be aware of:
+
+1. **FFmpeg** — On Mac, install with `brew install ffmpeg` and leave `FFMPEG_PATH` unset in `.env`. The Windows note in `.env.example` (setting `FFMPEG_PATH` if auto-detect hangs) is for Windows only; on Mac, auto-detect is fine.
+
+2. **Resuming after copying the workspace** — Checkpoint JSON files store absolute paths (e.g. `C:\...\clips\seg1_123.mp4` on Windows). If you copy the `workspace/` folder to a Mac and run without `--fresh`, the pipeline now **resolves those paths** by looking for the same clip filename in the project’s `clips/` dir, so resume works. If you prefer a clean run on the new machine, use `--fresh` and re-run from scratch.
+
 ## Project Structure
 
 ```

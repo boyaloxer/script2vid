@@ -11,10 +11,10 @@ cutting render time by ~10-20×.  Memory usage is minimal — only one
 FFmpeg subprocess runs at a time.
 """
 
-import json
 import os
+import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
 
@@ -242,12 +242,31 @@ def _ffmpeg_add_audio(video_path: Path, audio_path: Path, output_path: Path) -> 
 
 # ── Main entry point ──────────────────────────────────────────────────────
 
+def _resolve_footage_path(path_str: str, clips_dir: Path | None) -> str:
+    """
+    If path_str doesn't exist (e.g. workspace copied from another OS),
+    try the same filename in clips_dir so resume still works.
+
+    Uses PureWindowsPath to extract the filename because it handles both
+    / and \\ separators on any OS, whereas PosixPath treats \\ as literal.
+    """
+    if Path(path_str).exists():
+        return path_str
+    if clips_dir:
+        fname = PureWindowsPath(path_str).name
+        fallback = clips_dir / fname
+        if fallback.exists():
+            return str(fallback)
+    return path_str
+
+
 def assemble_video(
     edl: list[dict],
     audio_path: Path,
     output_dir: Path,
     output_name: str = "final_video.mp4",
     quality: str = "final",
+    clips_dir: Path | None = None,
 ) -> Path:
     """
     Execute the EDL using FFmpeg-direct processing.
@@ -266,6 +285,8 @@ def assemble_video(
         output_dir: Directory to save the output video
         output_name: Filename for the output video
         quality: "draft" for fast renders, "final" for production quality
+        clips_dir: Project clips directory; used to resolve footage paths
+            when they were saved on another OS (e.g. Windows → Mac).
 
     Returns:
         Path to the rendered video file.
@@ -283,6 +304,13 @@ def assemble_video(
     # Sort EDL by slot_start to ensure correct ordering
     # (Hurdle #7: fallback to audio_start for backward compat)
     edl_sorted = sorted(edl, key=lambda e: e.get("slot_start", e.get("audio_start", 0)))
+
+    # Resolve footage paths if workspace was copied from another OS
+    for entry in edl_sorted:
+        if entry.get("footage_file"):
+            entry["footage_file"] = _resolve_footage_path(
+                entry["footage_file"], clips_dir
+            )
 
     if not edl_sorted:
         raise RuntimeError("No clips to assemble — EDL is empty.")
@@ -317,9 +345,8 @@ def assemble_video(
         return output_path
 
     finally:
-        # Clean up temp directory
+        # Clean up temp directory — use shutil.rmtree to handle macOS
+        # .DS_Store files and any other OS-created artifacts
         print("[Video Assembler] Cleaning up temp files...")
-        for f in tmp_dir.iterdir():
-            f.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        shutil.rmtree(tmp_dir, ignore_errors=True)
         print("[Video Assembler] Temp files removed.")

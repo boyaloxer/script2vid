@@ -314,8 +314,8 @@ def _reconstruct_words(alignment: dict) -> list[dict]:
     word_start = None
 
     for i, char in enumerate(chars):
-        if char == " " or char == "\n":
-            # End of a word
+        if char in (" ", "\n", "\r"):
+            # End of a word (include \r for scripts authored on Windows)
             if current_word:
                 words.append({
                     "word": current_word,

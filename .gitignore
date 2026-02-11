@@ -4,6 +4,10 @@
 # Working files (clips, audio, rendered videos)
 workspace/
 
+# Scripts and thumbnails (content assets)
+scripts/
+thumbnails/
+
 # Python
 __pycache__/
 *.pyc
