@@ -310,6 +310,52 @@ def _ffmpeg_concat(clip_paths: list[Path], output_path: Path) -> None:
     list_file.unlink(missing_ok=True)
 
 
+def _ffmpeg_burn_captions(
+    video_path: Path,
+    srt_path: Path,
+    output_path: Path,
+    preset: str = "medium",
+    threads: int = 4,
+) -> None:
+    """
+    Burn SRT subtitles into the video as a final pass.
+
+    Uses FFmpeg's subtitles filter with force_style for a clean,
+    modern look: white text, semi-transparent dark background,
+    positioned at the bottom center.
+    """
+    # FFmpeg subtitles filter needs forward slashes and escaped colons/backslashes
+    srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
+
+    # Clean, modern subtitle style:
+    #   Fontname: Arial/sans-serif, size 22, white, semi-transparent dark box
+    #   Bottom center, small margin from edge
+    style = (
+        "Fontname=Arial,Fontsize=22,PrimaryColour=&H00FFFFFF,"
+        "OutlineColour=&H40000000,BackColour=&H80000000,"
+        "BorderStyle=4,Outline=0,Shadow=0,"
+        "MarginV=35,Alignment=2"
+    )
+
+    vf = f"subtitles='{srt_escaped}':force_style='{style}'"
+
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", str(video_path),
+        "-vf", vf,
+        "-c:v", "libx264",
+        "-preset", preset,
+        "-c:a", "copy",
+        "-threads", str(threads),
+        str(output_path),
+    ]
+    print("[Video Assembler] FFmpeg: burning in captions...")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        print(f"[FFmpeg captions stderr] {result.stderr[-500:]}")
+        raise RuntimeError(f"FFmpeg caption burn-in failed (exit {result.returncode})")
+
+
 def _ffmpeg_add_audio(video_path: Path, audio_path: Path, output_path: Path) -> None:
     """
     Overlay narration audio onto the silent concatenated video.
@@ -360,6 +406,7 @@ def assemble_video(
     output_name: str = "final_video.mp4",
     quality: str = "final",
     clips_dir: Path | None = None,
+    srt_path: Path | None = None,
 ) -> Path:
     """
     Execute the EDL using FFmpeg-direct processing.
@@ -368,6 +415,8 @@ def assemble_video(
     (trim + speed + scale + crop), then all clips are joined via
     the concat demuxer and narration audio is overlaid — both without
     re-encoding the video stream.
+
+    If srt_path is provided, a final pass burns subtitles into the video.
 
     Memory usage is minimal: only one FFmpeg process at a time.
     Scales to 1+ hour videos with hundreds of clips.
@@ -380,6 +429,8 @@ def assemble_video(
         quality: "draft" for fast renders, "final" for production quality
         clips_dir: Project clips directory; used to resolve footage paths
             when they were saved on another OS (e.g. Windows → Mac).
+        srt_path: Optional path to an SRT subtitle file. If provided,
+            captions are burned into the final video.
 
     Returns:
         Path to the rendered video file.
@@ -431,8 +482,21 @@ def assemble_video(
         _ffmpeg_concat(clip_paths, silent_video)
 
         # ── Step 3: Overlay narration audio (no video re-encode) ──────
-        output_path = output_dir / output_name
-        _ffmpeg_add_audio(silent_video, audio_path, output_path)
+        if srt_path and srt_path.exists():
+            # Captions enabled — audio overlay goes to a temp file,
+            # then we burn in subtitles as the final step
+            with_audio = tmp_dir / "_with_audio.mp4"
+            _ffmpeg_add_audio(silent_video, audio_path, with_audio)
+
+            # ── Step 4: Burn in captions (re-encodes video) ───────
+            output_path = output_dir / output_name
+            _ffmpeg_burn_captions(
+                with_audio, srt_path, output_path,
+                preset=preset, threads=threads,
+            )
+        else:
+            output_path = output_dir / output_name
+            _ffmpeg_add_audio(silent_video, audio_path, output_path)
 
         print(f"[Video Assembler] Done! Output: {output_path}")
         return output_path

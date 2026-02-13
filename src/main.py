@@ -21,6 +21,7 @@ from src.script_analyzer import analyze_script
 from src.footage_finder import find_footage_for_segments
 from src.voiceover import generate_voiceover, map_segments_to_time_ranges
 from src.text_overlay import generate_overlays_for_segments
+from src.captions import generate_srt
 from src.timeline_builder import build_timeline
 from src.video_assembler import assemble_video
 
@@ -113,6 +114,8 @@ def run_pipeline(
     project_name: str,
     fresh: bool = False,
     quality: str = "final",
+    overlays: bool = False,
+    captions: bool = False,
 ) -> Path:
     """
     Execute the full script-to-video pipeline.
@@ -126,6 +129,10 @@ def run_pipeline(
         project_name: Name for the project folder and output video.
         fresh: If True, ignore cached intermediate files and re-run everything.
         quality: "draft" for fast renders, "final" for production quality.
+        overlays: If True, generate and composite text overlays for quotes,
+            statistics, and source citations. Experimental — off by default.
+        captions: If True, burn closed captions into the video using
+            word-level timing from the TTS alignment data.
 
     Returns:
         Path to the rendered output video.
@@ -173,23 +180,24 @@ def run_pipeline(
         _save_json(segments, "1_segments.json")
 
     # ──────────────────────────────────────────────
-    # Stage 1.5: Text Overlay Generation
+    # Stage 1.5: Text Overlay Generation (opt-in)
     # ──────────────────────────────────────────────
-    has_overlays = any(
-        seg.get("quote_type", "none") != "none" and seg.get("quote_text")
-        for seg in segments
-    )
-    if has_overlays:
-        print("\n" + "=" * 60)
-        if all(seg.get("overlay_path") for seg in segments
-               if seg.get("quote_type", "none") != "none"):
-            print("STAGE 1.5: Text Overlay Generation [CACHED — skipping]")
-        else:
-            print("STAGE 1.5: Text Overlay Generation")
-            print("=" * 60)
-            segments = generate_overlays_for_segments(segments, overlays_dir)
-            # Re-save segments with overlay paths
-            _save_json(segments, "1_segments.json")
+    if overlays:
+        has_overlays = any(
+            seg.get("quote_type", "none") != "none" and seg.get("quote_text")
+            for seg in segments
+        )
+        if has_overlays:
+            print("\n" + "=" * 60)
+            if all(seg.get("overlay_path") for seg in segments
+                   if seg.get("quote_type", "none") != "none"):
+                print("STAGE 1.5: Text Overlay Generation [CACHED — skipping]")
+            else:
+                print("STAGE 1.5: Text Overlay Generation")
+                print("=" * 60)
+                segments = generate_overlays_for_segments(segments, overlays_dir)
+                # Re-save segments with overlay paths
+                _save_json(segments, "1_segments.json")
 
     # ──────────────────────────────────────────────
     # Stage 2: Footage Retrieval
@@ -244,6 +252,21 @@ def run_pipeline(
         _save_json(segments, "3_segments_with_timing.json")
 
     # ──────────────────────────────────────────────
+    # Stage 3.5: Caption Generation (opt-in)
+    # ──────────────────────────────────────────────
+    srt_path = None
+    if captions and alignment:
+        srt_path = project_dir / "captions.srt"
+        if srt_path.exists() and not fresh:
+            print("\n" + "=" * 60)
+            print("STAGE 3.5: Caption Generation [CACHED — skipping]")
+        else:
+            print("\n" + "=" * 60)
+            print("STAGE 3.5: Caption Generation")
+            print("=" * 60)
+            srt_path = generate_srt(alignment, srt_path)
+
+    # ──────────────────────────────────────────────
     # Stage 4a: Timeline Assembly (AI → EDL)
     # ──────────────────────────────────────────────
     print("\n" + "=" * 60)
@@ -257,20 +280,21 @@ def run_pipeline(
         _save_json(edl, "4_edl.json")
 
     # ──────────────────────────────────────────────
-    # Stage 4.5: Merge overlay paths into EDL
+    # Stage 4.5: Merge overlay paths into EDL (opt-in)
     # ──────────────────────────────────────────────
-    # The timeline builder doesn't know about overlays — we attach them
-    # to EDL entries here by matching on segment_id.
-    overlay_lookup = {
-        seg["segment_id"]: seg.get("overlay_path")
-        for seg in segments if seg.get("overlay_path")
-    }
-    if overlay_lookup:
-        for entry in edl:
-            sid = entry.get("segment_id")
-            if sid in overlay_lookup:
-                entry["overlay_path"] = overlay_lookup[sid]
-        print(f"[Pipeline] Attached {len(overlay_lookup)} overlay(s) to EDL entries.")
+    if overlays:
+        # The timeline builder doesn't know about overlays — we attach them
+        # to EDL entries here by matching on segment_id.
+        overlay_lookup = {
+            seg["segment_id"]: seg.get("overlay_path")
+            for seg in segments if seg.get("overlay_path")
+        }
+        if overlay_lookup:
+            for entry in edl:
+                sid = entry.get("segment_id")
+                if sid in overlay_lookup:
+                    entry["overlay_path"] = overlay_lookup[sid]
+            print(f"[Pipeline] Attached {len(overlay_lookup)} overlay(s) to EDL entries.")
 
     # ──────────────────────────────────────────────
     # Stage 4b + 5: Video Assembly & Rendering
@@ -281,7 +305,7 @@ def run_pipeline(
     output_name = _next_version_name(output_dir, project_name)
     output_path = assemble_video(
         edl, audio_path, output_dir, output_name,
-        quality=quality, clips_dir=clips_dir,
+        quality=quality, clips_dir=clips_dir, srt_path=srt_path,
     )
 
     elapsed = time.time() - total_start
@@ -318,6 +342,16 @@ def main():
         default="final",
         help="Render quality: 'draft' for fast renders (~3-5x faster), 'final' for production (default).",
     )
+    parser.add_argument(
+        "--overlays",
+        action="store_true",
+        help="Enable text overlays for quotes, statistics, and citations (experimental, off by default).",
+    )
+    parser.add_argument(
+        "--captions",
+        action="store_true",
+        help="Burn closed captions into the video, synced to the narrator's speech.",
+    )
     args = parser.parse_args()
 
     if args.script:
@@ -340,7 +374,11 @@ def main():
         sys.exit(1)
 
     project_name = _derive_project_name(script_file, script_text)
-    run_pipeline(script_text, project_name, fresh=args.fresh, quality=args.quality)
+    run_pipeline(
+        script_text, project_name,
+        fresh=args.fresh, quality=args.quality,
+        overlays=args.overlays, captions=args.captions,
+    )
 
 
 if __name__ == "__main__":
