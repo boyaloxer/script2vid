@@ -12,14 +12,15 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 
 ### What's Been Built
 
-- **Script Analysis** — AI decomposes script into visual segments with keywords, mood, and descriptions. Chunked processing for large scripts (5K chars/chunk with retry logic).
+- **Script Analysis** — AI decomposes script into visual segments with keywords, mood, descriptions, and **quote/citation classification** (`direct_quote`, `statistic`, `source_citation`, or `none`). Chunked processing for large scripts (5K chars/chunk with retry logic).
+- **Text Overlays** — Pillow-generated styled PNG overlays for quotes, statistics, and source citations. Three card types: direct-quote cards (dark rounded rect with accent line), statistic callouts (large bold number with backing), and source-citation pills (small lower-right badge). Composited onto video via FFmpeg with fade-in / fade-out animation.
 - **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits.
 - **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts.
 - **Audio Mastering** — 3-stage post-processing chain: force mono (safety net), `dynaudnorm` (per-frame volume levelling to eliminate chunk-to-chunk differences and tame spikes), then `loudnorm` EBU R128 normalization (-16 LUFS, YouTube target). Output duplicated to stereo for universal playback compatibility.
 - **Slot-Based Timing** — Each clip fills its full time slot (speech + silence gap), keeping video in sync with audio.
 - **Timeline Assembly** — AI generates a structured JSON Edit Decision List (EDL) with trim points and transitions. Batched processing (25 segments/batch) for large videos.
-- **FFmpeg-Direct Rendering** — All video processing (trim, scale, crop, speed-adjust, concat, audio overlay) uses direct FFmpeg subprocess calls for speed and memory efficiency. No MoviePy rendering.
-- **Per-Script Organization** — Each script gets its own workspace folder with clips, audio, credits, output, and debug files.
+- **FFmpeg-Direct Rendering** — All video processing (trim, scale, crop, speed-adjust, overlay composite, concat, audio overlay) uses direct FFmpeg subprocess calls for speed and memory efficiency. No MoviePy rendering.
+- **Per-Script Organization** — Each script gets its own workspace folder with clips, audio, overlays, credits, output, and debug files.
 - **Auto-Versioning** — Re-running the same script creates v2, v3, etc.
 - **Checkpoint/Resume** — Completed pipeline stages are cached. Re-runs skip finished stages automatically.
 - **Rendering Quality Options** — `--quality draft` (ultrafast) for iteration, `--quality final` (medium) for production.
@@ -46,6 +47,19 @@ For each segment, the agent extracts:
 - **Key visual concepts** (e.g., "person lying awake in dark bedroom")
 - **Mood / tone** (e.g., contemplative, melancholic, wondrous)
 - **Search keywords** optimized for stock footage queries (2-4 phrases per segment)
+- **Quote type** — one of `direct_quote`, `statistic`, `source_citation`, or `none`. Only 10-20% of segments are marked for overlays to avoid clutter.
+- **Quote text** — concise text to display on screen (when quote_type is not "none")
+- **Quote attribution** — source/speaker (when applicable)
+
+### 1.5. Text Overlay Generation
+
+For segments with a non-"none" `quote_type`, Pillow generates a styled transparent PNG overlay at the output resolution (1920x1080 by default). Three visual styles:
+
+- **Direct quote card** — Dark semi-transparent rounded rectangle in the lower-left, with a blue accent line on the left edge, white quote text, and gray attribution below.
+- **Statistic callout** — Large bold number centered on screen with a semi-transparent backing rectangle. Context text below.
+- **Source citation pill** — Small pill-shaped badge in the lower-right corner with the source name.
+
+Overlays are cached in the `overlays/` subfolder. On resume, existing PNGs are reused.
 
 ### 2. Footage Retrieval & Selection
 
@@ -79,6 +93,7 @@ AI agent receives segments with slot timing + footage metadata, outputs a **JSON
 
 Direct FFmpeg subprocess calls process each clip individually:
 - **Per-clip processing**: trim, speed-adjust, scale, crop to 1080p, strip audio, encode to temp MP4
+- **Text overlay compositing**: If a clip has an overlay PNG, FFmpeg composites it on top with a fade-in / fade-out animation using the `overlay` filter and time-dependent `colorchannelmixer` alpha
 - **Concat**: All temp clips joined via FFmpeg concat demuxer (`-c copy`, no re-encoding)
 - **Audio overlay**: Narration audio overlaid onto silent video (`-c:v copy`, no video re-encode)
 - **Cleanup**: Temp files removed automatically
@@ -96,6 +111,13 @@ Input: Script (.txt file)
   ▼
 ┌─────────────────────────────┐
 │  1. Script Analysis (AI)    │  Chunked for large scripts
+│     + quote/citation detect │  Classifies segments needing overlays
+└────────┬────────────────────┘
+         │
+         ▼
+┌─────────────────────────────┐
+│  1.5 Text Overlay Gen       │  Pillow → styled transparent PNGs
+│       (Pillow)              │  (only for segments with quotes)
 └────────┬────────────────────┘
          │
          ▼
@@ -109,16 +131,19 @@ Input: Script (.txt file)
          ▼                               ▼
 ┌──────────────────────────────────────────┐
 │   4. Timeline Assembly (AI → EDL)        │  Batched, slot-based timing
+│      + overlay path merge                │  Attaches PNGs to EDL entries
 └────────────────┬─────────────────────────┘
                  │
                  ▼
 ┌──────────────────────────────────────────┐
-│   5. Video Rendering (FFmpeg-Direct)     │  Per-clip + concat + audio
+│   5. Video Rendering (FFmpeg-Direct)     │  Per-clip + overlay + concat
+│      + fade-in/out overlay compositing   │  + audio
 └──────────────────────────────────────────┘
   │
   ▼
 Output: workspace/{script_name}/output/{script_name}.mp4
         workspace/{script_name}/credits/credits.txt
+        workspace/{script_name}/overlays/*.png
 ```
 
 ---
@@ -156,6 +181,7 @@ These features close the gap between "pipeline produces a video" and "video is r
 
 | Feature | Description |
 |---|---|
+| ~~**Text overlays for quotes/citations**~~ | ~~Stylized on-screen text for direct quotes, statistics, and source citations~~ — **DONE** (Pillow + FFmpeg) |
 | **Automatic transitions** | Crossfades, dissolves, or other transitions between clips (currently cuts only in practice) |
 | **Background music** | Add a subtle ambient track under the narration |
 | **Subtitle generation** | Burn captions into the video using the timestamp data we already have |

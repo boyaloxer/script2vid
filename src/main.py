@@ -20,6 +20,7 @@ from src.config import create_project_dirs
 from src.script_analyzer import analyze_script
 from src.footage_finder import find_footage_for_segments
 from src.voiceover import generate_voiceover, map_segments_to_time_ranges
+from src.text_overlay import generate_overlays_for_segments
 from src.timeline_builder import build_timeline
 from src.video_assembler import assemble_video
 
@@ -138,6 +139,7 @@ def run_pipeline(
     audio_dir = paths["audio_dir"]
     output_dir = paths["output_dir"]
     credits_dir = paths["credits_dir"]
+    overlays_dir = paths["overlays_dir"]
 
     print(f"\nProject: {project_name}")
     print(f"Workspace: {project_dir}")
@@ -169,6 +171,25 @@ def run_pipeline(
         print("=" * 60)
         segments = analyze_script(script_text)
         _save_json(segments, "1_segments.json")
+
+    # ──────────────────────────────────────────────
+    # Stage 1.5: Text Overlay Generation
+    # ──────────────────────────────────────────────
+    has_overlays = any(
+        seg.get("quote_type", "none") != "none" and seg.get("quote_text")
+        for seg in segments
+    )
+    if has_overlays:
+        print("\n" + "=" * 60)
+        if all(seg.get("overlay_path") for seg in segments
+               if seg.get("quote_type", "none") != "none"):
+            print("STAGE 1.5: Text Overlay Generation [CACHED — skipping]")
+        else:
+            print("STAGE 1.5: Text Overlay Generation")
+            print("=" * 60)
+            segments = generate_overlays_for_segments(segments, overlays_dir)
+            # Re-save segments with overlay paths
+            _save_json(segments, "1_segments.json")
 
     # ──────────────────────────────────────────────
     # Stage 2: Footage Retrieval
@@ -234,6 +255,22 @@ def run_pipeline(
         print("=" * 60)
         edl = build_timeline(segments)
         _save_json(edl, "4_edl.json")
+
+    # ──────────────────────────────────────────────
+    # Stage 4.5: Merge overlay paths into EDL
+    # ──────────────────────────────────────────────
+    # The timeline builder doesn't know about overlays — we attach them
+    # to EDL entries here by matching on segment_id.
+    overlay_lookup = {
+        seg["segment_id"]: seg.get("overlay_path")
+        for seg in segments if seg.get("overlay_path")
+    }
+    if overlay_lookup:
+        for entry in edl:
+            sid = entry.get("segment_id")
+            if sid in overlay_lookup:
+                entry["overlay_path"] = overlay_lookup[sid]
+        print(f"[Pipeline] Attached {len(overlay_lookup)} overlay(s) to EDL entries.")
 
     # ──────────────────────────────────────────────
     # Stage 4b + 5: Video Assembly & Rendering

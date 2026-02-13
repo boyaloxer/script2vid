@@ -74,8 +74,9 @@ def create_project_dirs(project_name: str) -> dict:
     audio_dir = project_dir / "audio"
     output_dir = project_dir / "output"
     credits_dir = project_dir / "credits"
+    overlays_dir = project_dir / "overlays"
 
-    for d in (project_dir, clips_dir, audio_dir, output_dir, credits_dir):
+    for d in (project_dir, clips_dir, audio_dir, output_dir, credits_dir, overlays_dir):
         d.mkdir(parents=True, exist_ok=True)
 
     return {
@@ -84,4 +85,5 @@ def create_project_dirs(project_name: str) -> dict:
         "audio_dir": audio_dir,
         "output_dir": output_dir,
         "credits_dir": credits_dir,
+        "overlays_dir": overlays_dir,
     }

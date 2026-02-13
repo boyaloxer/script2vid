@@ -291,6 +291,10 @@ ready to publish." Currently these post-production steps are done manually.
 
 ### Video Quality & Features
 
+- ~~**Text overlay system** — Pillow-generated styled PNG overlays for quotes,
+  statistics, and source citations. Composited onto video via FFmpeg with
+  fade-in / fade-out animation.~~ **DONE** — implemented in `text_overlay.py`
+  with three card types: direct-quote, statistic, source-citation.
 - **Background music layer** — Add a subtle ambient track under the narration
 - **Subtitle generation** — Burn captions into the video using the timestamp data
   we already have

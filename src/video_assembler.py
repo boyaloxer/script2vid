@@ -3,6 +3,8 @@ Stage 4b + 5 — Video Assembly & Rendering  (FFmpeg-direct)
 
 Uses FFmpeg subprocess calls for ALL heavy lifting:
 1. Each clip: trim + speed-adjust + scale + crop  →  one temp .mp4
+   - If the clip has a text overlay PNG, it is composited on top with
+     a fade-in / fade-out animation via FFmpeg's overlay filter.
 2. All temp clips joined via FFmpeg concat demuxer  (no re-encode)
 3. Narration audio overlaid via FFmpeg              (no video re-encode)
 
@@ -76,6 +78,38 @@ def _build_scale_crop_filter(src_w: int, src_h: int) -> str:
     return f"scale={sw}:{sh},crop={tw}:{th}"
 
 
+def _build_overlay_fade_chain(
+    target_dur: float,
+    fade_in: float = 0.4,
+    fade_out: float = 0.4,
+    delay: float = 0.3,
+) -> str:
+    """
+    Build the FFmpeg filter chain to apply to the overlay PNG before
+    compositing: format conversion + fade-in + fade-out on the alpha channel.
+
+    Uses FFmpeg's `fade` filter with `alpha=1` to modify only the
+    transparency channel, producing a smooth appear/disappear effect.
+
+    Args:
+        target_dur: Total clip duration in seconds.
+        fade_in:  Duration of the fade-in (seconds).
+        fade_out: Duration of the fade-out (seconds).
+        delay:    Seconds before the overlay starts appearing.
+
+    Returns:
+        A filter chain string like:
+        "format=rgba,fade=t=in:st=0.3:d=0.4:alpha=1,fade=t=out:st=2.4:d=0.4:alpha=1"
+    """
+    t_fade_out_start = max(target_dur - fade_out - 0.2, delay + fade_in + 0.5)
+
+    return (
+        f"format=rgba,"
+        f"fade=t=in:st={delay:.2f}:d={fade_in:.2f}:alpha=1,"
+        f"fade=t=out:st={t_fade_out_start:.2f}:d={fade_out:.2f}:alpha=1"
+    )
+
+
 def _ffmpeg_process_clip(
     entry: dict,
     index: int,
@@ -89,6 +123,8 @@ def _ffmpeg_process_clip(
       - Trim to footage_trim_start / footage_trim_end
       - Speed-adjust via setpts if trim duration != slot_duration
       - Scale + center-crop to OUTPUT_WIDTH x OUTPUT_HEIGHT
+      - If overlay_path is present, composite the text overlay PNG on top
+        with a fade-in / fade-out animation
       - Strip audio (narrator-only pipeline)
       - Output a temp .mp4
     """
@@ -99,20 +135,47 @@ def _ffmpeg_process_clip(
     if target_dur <= 0:
         target_dur = 1.0
 
+    overlay_path = entry.get("overlay_path")
+    has_overlay = overlay_path and Path(overlay_path).exists()
+
     out_path = tmp_dir / f"clip_{index:04d}.mp4"
 
     # ── No footage → black frame ──────────────────────────────────────
     if entry.get("footage_file") is None:
-        print(f"  [{index + 1}/{total}] Segment {seg_id}: black frame ({target_dur:.2f}s)")
-        cmd = [
-            "ffmpeg", "-y",
-            "-f", "lavfi", "-i",
-            f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}:d={target_dur}",
-            "-c:v", "libx264", "-preset", preset,
-            "-threads", str(threads),
-            "-an",
-            str(out_path),
-        ]
+        label = "black frame"
+        if has_overlay:
+            label += " + overlay"
+        print(f"  [{index + 1}/{total}] Segment {seg_id}: {label} ({target_dur:.2f}s)")
+
+        if has_overlay:
+            # Black frame + overlay composite with fade animation
+            ovr_filters = _build_overlay_fade_chain(target_dur)
+            fc = (
+                f"[1:v]{ovr_filters}[ovr];"
+                f"[0:v][ovr]overlay=0:0:format=auto"
+            )
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i",
+                f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}:d={target_dur}",
+                "-loop", "1", "-t", str(target_dur), "-i", overlay_path,
+                "-filter_complex", fc,
+                "-c:v", "libx264", "-preset", preset,
+                "-threads", str(threads),
+                "-t", str(target_dur),
+                "-an",
+                str(out_path),
+            ]
+        else:
+            cmd = [
+                "ffmpeg", "-y",
+                "-f", "lavfi", "-i",
+                f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}:d={target_dur}",
+                "-c:v", "libx264", "-preset", preset,
+                "-threads", str(threads),
+                "-an",
+                str(out_path),
+            ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"  [FFmpeg clip error] {result.stderr[-300:]}")
@@ -159,25 +222,55 @@ def _ffmpeg_process_clip(
     # 3. Force constant frame rate
     filters.append(f"fps={OUTPUT_FPS}")
 
-    vf = ",".join(filters)
-
+    overlay_tag = " + overlay" if has_overlay else ""
     print(f"  [{index + 1}/{total}] Segment {seg_id}: "
           f"{trim_dur:.1f}s -> {target_dur:.1f}s "
-          f"(speed {speed_factor:.2f}x)")
+          f"(speed {speed_factor:.2f}x){overlay_tag}")
 
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(trim_start),
-        "-i", src,
-        "-t", str(target_dur),   # Output duration = slot_duration
-        "-vf", vf,
-        "-c:v", "libx264",
-        "-preset", preset,
-        "-threads", str(threads),
-        "-an",                    # Strip audio — narrator only
-        "-movflags", "+faststart",
-        str(out_path),
-    ]
+    if has_overlay:
+        # ── Footage + overlay composite ────────────────────────────────
+        # filter_complex: process video → [base], then composite PNG
+        # overlay on top with a fade-in / fade-out alpha animation.
+        vf_chain = ",".join(filters)
+        ovr_filters = _build_overlay_fade_chain(target_dur)
+
+        fc = (
+            f"[0:v]{vf_chain}[base];"
+            f"[1:v]{ovr_filters}[ovr];"
+            f"[base][ovr]overlay=0:0:format=auto"
+        )
+
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(trim_start),
+            "-i", src,
+            "-loop", "1", "-t", str(target_dur),
+            "-i", overlay_path,
+            "-filter_complex", fc,
+            "-t", str(target_dur),
+            "-c:v", "libx264",
+            "-preset", preset,
+            "-threads", str(threads),
+            "-an",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
+    else:
+        # ── Footage only (no overlay) ──────────────────────────────────
+        vf = ",".join(filters)
+        cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(trim_start),
+            "-i", src,
+            "-t", str(target_dur),
+            "-vf", vf,
+            "-c:v", "libx264",
+            "-preset", preset,
+            "-threads", str(threads),
+            "-an",
+            "-movflags", "+faststart",
+            str(out_path),
+        ]
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:

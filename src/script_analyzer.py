@@ -29,6 +29,22 @@ For each segment, provide:
 - "mood": one or two words describing the emotional tone (e.g. "calm", "energetic", "dramatic")
 - "search_keywords": a list of 2-4 short keyword phrases optimized for searching stock \
   footage (e.g. ["city skyline night", "urban lights aerial"])
+- "quote_type": one of "none", "direct_quote", "statistic", or "source_citation". \
+  Use "direct_quote" when someone is being quoted or paraphrased (e.g. 'analysts said...', \
+  'according to X...'). Use "statistic" when a striking number or data point is the focus \
+  (e.g. '$2.6 billion in liquidations', 'dropped 46%'). Use "source_citation" when a \
+  specific source or report is named without a direct quote (e.g. 'a report published by...', \
+  'data from Glassnode showed...'). Use "none" for all other segments (narration, \
+  transitions, analysis, etc.). Most segments should be "none" — only mark segments where \
+  an on-screen text overlay would genuinely add value.
+- "quote_text": the exact text to display on screen (only if quote_type is NOT "none"). \
+  For "direct_quote": the quoted words or paraphrased claim, kept concise (under 120 chars). \
+  For "statistic": the key number and brief context, e.g. "$2.6B liquidated in 24 hours". \
+  For "source_citation": the source name and date, e.g. "Fortune, Feb 6 2026". \
+  Omit this field or set to null when quote_type is "none".
+- "quote_attribution": who said it or where it came from (only for "direct_quote" and \
+  "source_citation", e.g. "Deutsche Bank analysts", "Bitwise CIO Matt Hougan"). \
+  Omit or set to null when not applicable.
 
 Rules:
 - Keep segments short — typically one or two sentences each.
@@ -36,6 +52,8 @@ Rules:
 - Visual descriptions should be concrete enough to find matching stock footage \
   (avoid vague terms like "concept of growth").
 - Keywords should be diverse — don't repeat the same keyword across segments when possible.
+- Be selective with quote_type — only 10-20% of segments should have a non-"none" value. \
+  Overusing text overlays makes the video cluttered. Reserve them for impactful moments.
 
 Respond ONLY with a valid JSON array of segment objects. No extra text.\
 """
