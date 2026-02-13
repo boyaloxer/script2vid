@@ -1,5 +1,11 @@
 # Video Assembly — Research & Decision
 
+> **Status:** This document captures the original research and the final architecture.
+> The initial plan considered MoviePy for rendering but was replaced with **FFmpeg-direct
+> subprocess calls** during implementation after hitting memory and performance issues
+> (see hurdles.md #2). The core architecture (AI → EDL → deterministic execution)
+> remains exactly as designed.
+
 ## The Problem
 
 We have three ingredients:
@@ -31,69 +37,64 @@ These should NOT be the same system. AI is great at judgment calls but unreliabl
 
 ---
 
-## Recommended Approach: AI Agent + Edit Decision List + MoviePy
+## Architecture: AI Agent + Edit Decision List + FFmpeg-Direct
 
 ### How it works:
 
 ```
 Step 1: AI agent receives all the data:
-        - Script segments with their time ranges
+        - Script segments with their time ranges (slot-based timing)
         - Footage clip metadata (durations, file paths)
         - Audio duration and timestamp map
 
 Step 2: AI agent outputs a structured Edit Decision List (EDL) as JSON:
         [
           {
-            "segment": 1,
-            "audio_start": 0.0,
-            "audio_end": 4.2,
+            "segment_id": 1,
+            "slot_start": 0.0,
+            "slot_end": 4.5,
             "footage_file": "clips/city_skyline.mp4",
             "footage_trim_start": 2.5,
-            "footage_trim_end": 6.7,
-            "transition": "crossfade",
-            "transition_duration": 0.3
-          },
-          {
-            "segment": 2,
-            "audio_start": 4.2,
-            "audio_end": 9.7,
-            "footage_file": "clips/laptop_typing.mp4",
-            "footage_trim_start": 0.0,
-            "footage_trim_end": 5.5,
+            "footage_trim_end": 7.0,
             "transition": "cut",
             "transition_duration": 0
-          }
+          },
+          ...
         ]
 
-Step 3: A deterministic Python script reads the EDL and executes it
-        using MoviePy — no AI involved in this step, just reliable code.
+Step 3: Deterministic Python code reads the EDL and executes it
+        using FFmpeg subprocess calls — no AI involved in this step.
+        Each clip is processed individually (trim, speed-adjust, scale,
+        crop), then all clips are concatenated and narration is overlaid.
 ```
 
 ### Why this is the best approach:
 
 - **Separation of concerns** — AI makes creative choices, code does the mechanical work
 - **Debuggable** — The EDL is a readable artifact you can inspect and manually adjust if needed
-- **Reliable** — MoviePy/FFmpeg won't hallucinate or make random errors; given the same EDL, you get the same output every time
+- **Reliable** — FFmpeg won't hallucinate or make random errors; given the same EDL, you get the same output every time
 - **Flexible** — Swap the AI provider without touching the rendering code, or change the rendering engine without touching the AI logic
 
 ---
 
-## Video Editing Tool: MoviePy 2.x
+## Rendering Engine: FFmpeg-Direct Subprocess Calls
 
-**MoviePy** (currently v2.2.1) is the best fit. It's a Python library built on top of FFmpeg that provides a clean API for exactly what we need:
+The original plan was to use MoviePy 2.x as a Python wrapper around FFmpeg.
+During implementation, MoviePy caused two critical issues:
+1. **MemoryError** — Loading 100+ HD clips simultaneously exceeded available RAM (see hurdles.md #2)
+2. **Performance** — MoviePy's frame-by-frame Python processing was ~10-20x slower than direct FFmpeg calls
 
-### What we'd use:
-- `VideoFileClip("file.mp4")` — load a clip
-- `.subclipped(start, end)` — trim to exact timestamps
-- `concatenate_videoclips([clip1, clip2, ...])` — sequence clips
-- `.with_effects([vfx.CrossFadeIn(duration)])` — transitions
-- `clip.with_audio(narration_audio)` or `CompositeAudioClip` — overlay narration
-- `.write_videofile("output.mp4")` — render final video
+**Current implementation** (`video_assembler.py`) uses FFmpeg subprocess calls for all heavy lifting:
 
-### Why not raw FFmpeg?
-- FFmpeg is more powerful but requires building complex filter graph strings
-- For our use case (trim, concat, audio overlay), MoviePy is more readable and maintainable
-- MoviePy uses FFmpeg under the hood anyway, so we get the same rendering quality
+1. **Per-clip processing:** Each EDL entry is processed by a single FFmpeg command:
+   trim + speed-adjust (`setpts`) + scale + center-crop + strip audio → temp .mp4
+2. **Concat:** All temp clips joined via FFmpeg concat demuxer (`-f concat -c copy`) — nearly instant, no re-encoding
+3. **Audio overlay:** Narration audio overlaid in a separate FFmpeg pass (`-c:v copy`) — no video re-encode
+4. **Cleanup:** Temp files removed automatically
+
+Memory usage is minimal — only one FFmpeg subprocess runs at a time. This approach scales to 1+ hour videos with hundreds of clips.
+
+MoviePy remains a dependency (`requirements.txt`) but is only used for **audio duration probing** (`AudioFileClip.duration`) in `voiceover.py`.
 
 ### Why not a full AI video generation tool?
 - Tools like MOSAIC and AutoEdits.ai exist but are closed platforms, not libraries
@@ -102,22 +103,24 @@ Step 3: A deterministic Python script reads the EDL and executes it
 
 ---
 
-## AI Agent for the EDL — Where Kimi 2.5 / LLM Fits
+## AI Agent for the EDL — Where the LLM Fits
 
 The AI agent's job at this stage is narrow and well-defined. It receives:
 
 **Inputs:**
 - The original script segments (with text and visual descriptions)
-- Time ranges for each segment (from ElevenLabs timestamps)
-- Metadata for each downloaded footage clip (file path, duration, resolution)
+- Slot-based time ranges for each segment (from ElevenLabs timestamps)
+- Metadata for each downloaded footage clip (file path, duration)
 
 **Output:**
 - A structured JSON Edit Decision List (EDL)
 
 **What the agent reasons about:**
-- "This segment is 4.2 seconds long but the footage clip is 12 seconds — which 4.2-second window of the clip best represents the visual concept?"
+- "This segment's slot is 4.5 seconds but the footage clip is 12 seconds — which 4.5-second window best represents the visual concept?"
 - "These two adjacent segments are visually similar — should I use a crossfade or a hard cut?"
-- "This segment has no great footage match — should I extend the previous clip or use a B-roll filler?"
+- "This segment has no great footage match — set footage_file to null and the renderer will use a black frame."
+
+For large segment counts (30+), the LLM processes segments in batches of 25 with inter-batch context to maintain transition continuity.
 
 This is a focused, structured task that works well with any capable LLM (Kimi 2.5, GPT-4, Claude, etc.) — the key is a good system prompt and a strict output schema.
 
@@ -148,7 +151,7 @@ Important clarification from the ElevenLabs docs:
 
 | Concern | Tool | Role |
 |---|---|---|
-| Creative editing decisions | AI Agent (Kimi 2.5 / LLM) | Decides trim points, transitions, pacing |
+| Creative editing decisions | AI Agent (LLM) | Decides trim points, transitions, pacing |
 | Edit plan format | JSON Edit Decision List | Structured, inspectable, debuggable |
-| Video manipulation | MoviePy 2.x (Python) | Trims, concatenates, overlays, renders |
-| Underlying engine | FFmpeg (via MoviePy) | Actual encoding/decoding |
+| Video rendering | FFmpeg (direct subprocess calls) | Trim, scale, crop, speed-adjust, concat, audio overlay |
+| Audio duration probing | MoviePy (AudioFileClip only) | Measures chunk/total audio duration in voiceover.py |

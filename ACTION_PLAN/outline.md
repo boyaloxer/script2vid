@@ -141,13 +141,30 @@ Output: workspace/{script_name}/output/{script_name}.mp4
 
 ## Potential Future Features
 
+### High Priority — Full Video Production Workflow
+
+These features close the gap between "pipeline produces a video" and "video is ready to publish." Currently these steps are done manually after each run.
+
+| Feature | Description |
+|---|---|
+| **Script generation from topic** | Given a topic (e.g. "the Bitcoin crash of February 2026"), use deep research + LLM to generate a complete 20+ minute video script. Currently scripts are written manually or with external AI assistance before being fed to the pipeline. Integrating this step would make the workflow truly end-to-end: topic in, publish-ready video out. |
+| **Video title generation** | Auto-generate a CTR-optimized YouTube title based on the script content. The LLM already understands the full script — generating a compelling title is a natural extension. Output saved to the workspace folder alongside the video. |
+| **Video description generation** | Auto-generate a YouTube description including a summary, auto-generated timestamps (derived from segment timing data we already have), and Pexels attribution (from the credits.txt we already generate). Currently descriptions are written manually. |
+| **Thumbnail prompt generation** | Auto-generate a Midjourney (or similar) prompt for creating a custom thumbnail image based on the script's topic, tone, and key visuals. The pipeline already knows the visual descriptions and mood of every segment — distilling that into a thumbnail prompt is straightforward. |
+
+### Medium Priority — Video Quality & Features
+
 | Feature | Description |
 |---|---|
 | **Automatic transitions** | Crossfades, dissolves, or other transitions between clips (currently cuts only in practice) |
 | **Background music** | Add a subtle ambient track under the narration |
 | **Subtitle generation** | Burn captions into the video using the timestamp data we already have |
-| **Thumbnail generation** | Auto-generate a thumbnail from the best frame |
+| **GPU-accelerated encoding** | Use NVENC/QSV for faster rendering on supported hardware |
+
+### Lower Priority — Workflow & Tooling
+
+| Feature | Description |
+|---|---|
 | **Batch processing** | Run multiple scripts in sequence overnight |
 | **Web UI** | Simple interface for uploading scripts and downloading videos |
 | **Cost estimation** | Log estimated API costs before running, so the user can confirm |
-| **GPU-accelerated encoding** | Use NVENC/QSV for faster rendering on supported hardware |

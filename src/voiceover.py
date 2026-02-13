@@ -7,9 +7,12 @@ eleven_multilingual_v2), automatically chunks the text and uses ElevenLabs'
 Request Stitching (previous_request_ids) to maintain consistent voice prosody
 across chunks.
 
-After generation, audio is post-processed with FFmpeg:
-  1. Mono conversion — eliminates channel-balance shifts between chunks
-  2. EBU R128 loudness normalization — ensures consistent perceived volume
+After generation, audio is post-processed with a 3-stage FFmpeg filter chain:
+  1. aformat  — Force mono (safety net for consistent channel layout)
+  2. dynaudnorm — Dynamic per-frame volume levelling (evens out chunk-to-chunk
+     differences and tames transient spikes before global normalization)
+  3. loudnorm — EBU R128 loudness normalization (-16 LUFS, YouTube target)
+Output is duplicated to stereo (-ac 2) for universal playback compatibility.
 """
 
 import base64

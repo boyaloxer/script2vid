@@ -273,11 +273,34 @@ exist:
 
 ## Stretch Goals (After Long-Form Works)
 
+### Full Video Production Workflow (High Priority)
+
+These features close the gap between "pipeline produces a video" and "video is
+ready to publish." Currently these post-production steps are done manually.
+
+- **Script generation from topic** — Given a topic, use deep research + LLM to
+  generate a complete 20+ minute video script automatically. Makes the workflow
+  truly end-to-end: topic in, publish-ready video out.
+- **Video title generation** — Auto-generate a CTR-optimized YouTube title from
+  the script content. Save to workspace folder alongside the video.
+- **Video description generation** — Auto-generate a YouTube description with
+  summary, timestamps (from segment timing data we already have), and Pexels
+  attribution (from credits.txt we already generate).
+- **Thumbnail prompt generation** — Auto-generate a Midjourney/DALL-E prompt for
+  a custom thumbnail based on the script's topic, tone, and key visuals.
+
+### Video Quality & Features
+
 - **Background music layer** — Add a subtle ambient track under the narration
 - **Subtitle generation** — Burn captions into the video using the timestamp data
   we already have
-- **Thumbnail generation** — Auto-generate a thumbnail from the best frame
+- **Automatic transitions** — Crossfades, dissolves between clips
+
+### Workflow & Tooling
+
 - **Batch processing** — Run multiple scripts in sequence overnight
 - **Web UI** — Simple interface for uploading scripts and downloading videos
 - **Cost estimation** — Log estimated API costs (ElevenLabs credits, LLM tokens)
   before running the pipeline, so the user can confirm
+- **GPU-accelerated encoding** — Use NVENC/QSV for faster rendering on supported
+  hardware
