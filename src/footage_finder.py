@@ -11,6 +11,7 @@ limit on long-form videos (80–150+ segments).
 from pathlib import Path
 import requests
 
+import src.config as _cfg
 from src.config import PEXELS_API_KEY, PEXELS_BASE_URL
 from src.rate_limiter import RateLimiter
 
@@ -29,12 +30,27 @@ def _pexels_headers() -> dict:
     return {"Authorization": PEXELS_API_KEY}
 
 
-def search_videos(query: str, per_page: int = 15, orientation: str = "landscape") -> list[dict]:
+def _detect_orientation() -> str:
+    """Detect the desired orientation from the current output resolution."""
+    # Access via module reference so --vertical runtime override is picked up
+    if _cfg.OUTPUT_HEIGHT > _cfg.OUTPUT_WIDTH:
+        return "portrait"
+    elif _cfg.OUTPUT_WIDTH == _cfg.OUTPUT_HEIGHT:
+        return "square"
+    return "landscape"
+
+
+def search_videos(query: str, per_page: int = 15, orientation: str | None = None) -> list[dict]:
     """
     Search Pexels for videos matching a query.
     Returns the raw list of video objects from the API response.
     Automatically respects the Pexels rate limit (200 req/hour).
+
+    Orientation is auto-detected from the output resolution if not specified.
     """
+    if orientation is None:
+        orientation = _detect_orientation()
+
     _pexels_limiter.wait_if_needed()
 
     params = {

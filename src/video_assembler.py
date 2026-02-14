@@ -18,7 +18,7 @@ import shutil
 import subprocess
 from pathlib import Path, PureWindowsPath
 
-from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT, OUTPUT_FPS
+import src.config as _cfg
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
@@ -61,7 +61,7 @@ def _build_scale_crop_filter(src_w: int, src_h: int) -> str:
     resolution, then center-crops to the exact target size.
     Same logic as the old _resize_and_crop, but in FFmpeg filter syntax.
     """
-    tw, th = OUTPUT_WIDTH, OUTPUT_HEIGHT
+    tw, th = _cfg.OUTPUT_WIDTH, _cfg.OUTPUT_HEIGHT
 
     if src_w <= 0 or src_h <= 0:
         # Can't calculate — just force the output size
@@ -122,7 +122,7 @@ def _ffmpeg_process_clip(
     Process one EDL entry entirely via FFmpeg:
       - Trim to footage_trim_start / footage_trim_end
       - Speed-adjust via setpts if trim duration != slot_duration
-      - Scale + center-crop to OUTPUT_WIDTH x OUTPUT_HEIGHT
+      - Scale + center-crop to _cfg.OUTPUT_WIDTH x _cfg.OUTPUT_HEIGHT
       - If overlay_path is present, composite the text overlay PNG on top
         with a fade-in / fade-out animation
       - Strip audio (narrator-only pipeline)
@@ -157,7 +157,7 @@ def _ffmpeg_process_clip(
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "lavfi", "-i",
-                f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}:d={target_dur}",
+                f"color=c=black:s={_cfg.OUTPUT_WIDTH}x{_cfg.OUTPUT_HEIGHT}:r={_cfg.OUTPUT_FPS}:d={target_dur}",
                 "-loop", "1", "-t", str(target_dur), "-i", overlay_path,
                 "-filter_complex", fc,
                 "-c:v", "libx264", "-preset", preset,
@@ -170,7 +170,7 @@ def _ffmpeg_process_clip(
             cmd = [
                 "ffmpeg", "-y",
                 "-f", "lavfi", "-i",
-                f"color=c=black:s={OUTPUT_WIDTH}x{OUTPUT_HEIGHT}:r={OUTPUT_FPS}:d={target_dur}",
+                f"color=c=black:s={_cfg.OUTPUT_WIDTH}x{_cfg.OUTPUT_HEIGHT}:r={_cfg.OUTPUT_FPS}:d={target_dur}",
                 "-c:v", "libx264", "-preset", preset,
                 "-threads", str(threads),
                 "-an",
@@ -220,7 +220,7 @@ def _ffmpeg_process_clip(
     filters.append(_build_scale_crop_filter(src_w, src_h))
 
     # 3. Force constant frame rate
-    filters.append(f"fps={OUTPUT_FPS}")
+    filters.append(f"fps={_cfg.OUTPUT_FPS}")
 
     overlay_tag = " + overlay" if has_overlay else ""
     print(f"  [{index + 1}/{total}] Segment {seg_id}: "
@@ -316,29 +316,61 @@ def _ffmpeg_burn_captions(
     output_path: Path,
     preset: str = "medium",
     threads: int = 4,
+    vertical: bool = False,
 ) -> None:
     """
     Burn SRT subtitles into the video as a final pass.
 
     Uses FFmpeg's subtitles filter with force_style for a clean,
-    modern look: white text, semi-transparent dark background,
-    positioned at the bottom center.
+    modern look: white text, semi-transparent dark background.
+
+    For landscape (16:9): bottom center, standard width.
+    For vertical  (9:16): vertically centered, shorter line width,
+        slightly larger font to fill the narrower frame.
     """
     # FFmpeg subtitles filter needs forward slashes and escaped colons/backslashes
     srt_escaped = str(srt_path).replace("\\", "/").replace(":", "\\:")
 
-    # Clean, modern subtitle style:
-    #   Fontname: Arial/sans-serif, size 22, white, semi-transparent dark box
-    #   Bottom center, small margin from edge
-    style = (
-        "Fontname=Arial,Fontsize=22,PrimaryColour=&H00FFFFFF,"
-        "OutlineColour=&H40000000,BackColour=&H80000000,"
-        "BorderStyle=4,Outline=0,Shadow=0,"
-        "MarginV=35,Alignment=2"
-    )
+    if vertical:
+        # Vertical (9:16) — captions in the lower-third safe zone.
+        #
+        # IMPORTANT: FFmpeg's SRT→ASS conversion uses PlayResX=384,
+        # PlayResY=288 as the virtual coordinate system. All Margin
+        # and Fontsize values are in this 384×288 space, NOT pixels.
+        # Scale factor: 288/1920 ≈ 0.15 (vertical), 384/1080 ≈ 0.356
+        #
+        # Platform UI constraints (1080×1920 real pixels):
+        #   Top ~130px:    profile info, channel name
+        #   Bottom ~320px: like/comment/share buttons, progress bar
+        #   Center (~960px): visual focus — don't cover this
+        #
+        # Target: captions at ~75% down the frame.
+        #   In pixels: ~480px from bottom → ~1440px from top
+        #   In ASS units: 480 * (288/1920) ≈ 72
+        # MarginL/MarginR to keep text from edge-to-edge:
+        #   80px * (384/1080) ≈ 28 ASS units
+        # Fontsize: default 16 in ASS ≈ 107px real; 18 ≈ 120px — legible.
+        style = (
+            "Fontname=Arial,Fontsize=18,PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H40000000,BackColour=&H80000000,"
+            "BorderStyle=4,Outline=0,Shadow=0,"
+            "MarginL=28,MarginR=28,MarginV=72,Alignment=2"
+        )
+    else:
+        # Landscape (16:9) — bottom center, standard style.
+        # ASS coordinate system: PlayResX=384, PlayResY=288.
+        # MarginV=10 ≈ 37px from bottom at 1080p — clean default.
+        # Fontsize=16 ≈ 60px actual — readable on 1080p.
+        style = (
+            "Fontname=Arial,Fontsize=16,PrimaryColour=&H00FFFFFF,"
+            "OutlineColour=&H40000000,BackColour=&H80000000,"
+            "BorderStyle=4,Outline=0,Shadow=0,"
+            "MarginV=10,Alignment=2"
+        )
 
     vf = f"subtitles='{srt_escaped}':force_style='{style}'"
 
+    label = "vertical middle" if vertical else "bottom"
     cmd = [
         "ffmpeg", "-y",
         "-i", str(video_path),
@@ -349,7 +381,7 @@ def _ffmpeg_burn_captions(
         "-threads", str(threads),
         str(output_path),
     ]
-    print("[Video Assembler] FFmpeg: burning in captions...")
+    print(f"[Video Assembler] FFmpeg: burning in captions ({label})...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"[FFmpeg captions stderr] {result.stderr[-500:]}")
@@ -407,6 +439,7 @@ def assemble_video(
     quality: str = "final",
     clips_dir: Path | None = None,
     srt_path: Path | None = None,
+    vertical: bool = False,
 ) -> Path:
     """
     Execute the EDL using FFmpeg-direct processing.
@@ -431,6 +464,8 @@ def assemble_video(
             when they were saved on another OS (e.g. Windows → Mac).
         srt_path: Optional path to an SRT subtitle file. If provided,
             captions are burned into the final video.
+        vertical: If True, captions are positioned in the middle of the
+            screen with shorter line width (for 9:16 vertical format).
 
     Returns:
         Path to the rendered video file.
@@ -493,6 +528,7 @@ def assemble_video(
             _ffmpeg_burn_captions(
                 with_audio, srt_path, output_path,
                 preset=preset, threads=threads,
+                vertical=vertical,
             )
         else:
             output_path = output_dir / output_name

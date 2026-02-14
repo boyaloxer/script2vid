@@ -294,10 +294,19 @@ ready to publish." Currently these post-production steps are done manually.
 - ~~**Text overlay system** — Pillow-generated styled PNG overlays for quotes,
   statistics, and source citations. Composited onto video via FFmpeg with
   fade-in / fade-out animation.~~ **DONE** — implemented in `text_overlay.py`
-  with three card types: direct-quote, statistic, source-citation.
+  with three card types: direct-quote, statistic, source-citation. Opt-in via
+  `--overlays` flag (experimental — alignment can vary).
+- ~~**Subtitle / caption generation** — Burn captions into the video using the
+  timestamp data we already have.~~ **DONE** — implemented in `captions.py` +
+  `video_assembler.py`. SRT generated from ElevenLabs word-level timing, burned in
+  via FFmpeg `subtitles` filter with ASS styling. Opt-in via `--captions` flag,
+  auto-enabled in vertical mode. Landscape: bottom-center, 8 words/cue. Vertical:
+  lower-third safe zone, 5 words/cue.
+- ~~**Vertical short-form support** — 9:16 output for TikTok, Reels, YouTube
+  Shorts.~~ **DONE** — `--vertical` flag switches to 1080x1920, auto-pulls portrait
+  footage from Pexels, auto-enables captions with shorter cues, positions captions
+  in lower-third safe zone above platform UI buttons.
 - **Background music layer** — Add a subtle ambient track under the narration
-- **Subtitle generation** — Burn captions into the video using the timestamp data
-  we already have
 - **Automatic transitions** — Crossfades, dissolves between clips
 
 ### Workflow & Tooling
@@ -308,3 +317,9 @@ ready to publish." Currently these post-production steps are done manually.
   before running the pipeline, so the user can confirm
 - **GPU-accelerated encoding** — Use NVENC/QSV for faster rendering on supported
   hardware
+
+### Voice & Audio
+
+- **Voice stability improvements** — ElevenLabs voice settings (stability=0.75,
+  use_speaker_boost=True) were tuned to reduce whispering artifacts in the narrator.
+  Further tuning or model switching may improve this further for different voice IDs.

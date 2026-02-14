@@ -13,9 +13,11 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 ### What's Been Built
 
 - **Script Analysis** — AI decomposes script into visual segments with keywords, mood, descriptions, and **quote/citation classification** (`direct_quote`, `statistic`, `source_citation`, or `none`). Chunked processing for large scripts (5K chars/chunk with retry logic).
-- **Text Overlays** — Pillow-generated styled PNG overlays for quotes, statistics, and source citations. Three card types: direct-quote cards (dark rounded rect with accent line), statistic callouts (large bold number with backing), and source-citation pills (small lower-right badge). Composited onto video via FFmpeg with fade-in / fade-out animation.
-- **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits.
-- **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts.
+- **Text Overlays** *(opt-in, `--overlays`)* — Pillow-generated styled PNG overlays for quotes, statistics, and source citations. Three card types: direct-quote cards (dark rounded rect with accent line), statistic callouts (large bold number with backing), and source-citation pills (small lower-right badge). Composited onto video via FFmpeg with fade-in / fade-out animation. Experimental — alignment can vary.
+- **Closed Captions** *(opt-in, `--captions`; auto-enabled in vertical mode)* — SRT subtitle generation from ElevenLabs word-level timing data, burned into the video via FFmpeg's `subtitles` filter with ASS styling. Landscape mode: bottom-center, 8 words/cue. Vertical mode: lower-third safe zone (above platform UI, below visual center), 5 words/cue.
+- **Vertical Short-Form Support** *(`--vertical`)* — Renders in 9:16 (1080x1920) for TikTok, Reels, and YouTube Shorts. Automatically switches Pexels searches to portrait orientation, enables captions with shorter cues, and positions captions in the lower-third safe zone.
+- **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits. **Auto-detects orientation** (landscape or portrait) based on output resolution.
+- **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts. Voice settings tuned for stability (0.75) with speaker boost enabled.
 - **Audio Mastering** — 3-stage post-processing chain: force mono (safety net), `dynaudnorm` (per-frame volume levelling to eliminate chunk-to-chunk differences and tame spikes), then `loudnorm` EBU R128 normalization (-16 LUFS, YouTube target). Output duplicated to stereo for universal playback compatibility.
 - **Slot-Based Timing** — Each clip fills its full time slot (speech + silence gap), keeping video in sync with audio.
 - **Timeline Assembly** — AI generates a structured JSON Edit Decision List (EDL) with trim points and transitions. Batched processing (25 segments/batch) for large videos.
@@ -70,6 +72,7 @@ For each segment, queries the **Pexels Video API** using the extracted keywords:
 - Retries with broader keywords if initial search returns nothing
 - Integrated **sliding-window rate limiter** (200 req/hr) with automatic pause and resume
 - Captures videographer attribution for Pexels credits
+- **Auto-detects orientation** from output resolution — pulls portrait clips for vertical mode, landscape for standard
 
 ### 3. Voiceover Generation + Timestamp Extraction
 
@@ -80,6 +83,14 @@ Sends the script to **ElevenLabs TTS** with `with_timestamps` enabled:
 - Characters are reconstructed into word boundaries, then mapped to segments
 - Each segment gets a **full time slot**: from its `audio_start` to the next segment's `audio_start`
 - Post-processing: **3-stage audio mastering** via FFmpeg — force mono, `dynaudnorm` (per-frame levelling), `loudnorm` (EBU R128, -16 LUFS), then output as stereo
+
+### 3.5. Caption Generation (opt-in)
+
+When `--captions` is enabled (or auto-enabled by `--vertical`), generates an SRT subtitle file from the word-level timing data extracted during voiceover generation:
+- Words are grouped into readable cues — **8 words per cue** for landscape, **5 words per cue** for vertical (narrower frame)
+- Cue boundaries prefer sentence breaks (periods, question marks, exclamation marks) when possible
+- The SRT file is saved as `captions.srt` in the project folder and cached across re-runs
+- Captions are burned into the final video during the rendering stage
 
 ### 4. Timeline Assembly (AI Agent → EDL)
 
@@ -92,10 +103,13 @@ AI agent receives segments with slot timing + footage metadata, outputs a **JSON
 ### 5. Video Assembly & Rendering (FFmpeg-Direct)
 
 Direct FFmpeg subprocess calls process each clip individually:
-- **Per-clip processing**: trim, speed-adjust, scale, crop to 1080p, strip audio, encode to temp MP4
-- **Text overlay compositing**: If a clip has an overlay PNG, FFmpeg composites it on top with a fade-in / fade-out animation using the `overlay` filter and time-dependent `colorchannelmixer` alpha
+- **Per-clip processing**: trim, speed-adjust, scale, crop to output resolution, strip audio, encode to temp MP4. Resolution adapts to vertical (1080x1920) or landscape (1920x1080) mode.
+- **Text overlay compositing** *(opt-in)*: If a clip has an overlay PNG, FFmpeg composites it on top with a fade-in / fade-out animation using the `overlay` filter and time-dependent `colorchannelmixer` alpha
 - **Concat**: All temp clips joined via FFmpeg concat demuxer (`-c copy`, no re-encoding)
 - **Audio overlay**: Narration audio overlaid onto silent video (`-c:v copy`, no video re-encode)
+- **Caption burn-in** *(opt-in)*: When an SRT file is provided, captions are burned into the video using FFmpeg's `subtitles` filter with ASS styling:
+  - **Landscape mode**: Bottom-center, standard font size, full-width margins
+  - **Vertical mode**: Lower-third safe zone (~75% down frame), shorter line width, positioned above platform UI buttons. Uses ASS virtual coordinate system (PlayResX=384, PlayResY=288) for consistent positioning across resolutions.
 - **Cleanup**: Temp files removed automatically
 - **Quality presets**: `draft` (ultrafast, high threads) or `final` (medium preset)
 
@@ -106,44 +120,54 @@ This approach is ~10-20x faster than MoviePy-based rendering and uses minimal me
 ## High-Level Architecture
 
 ```
-Input: Script (.txt file)
-  │
-  ▼
-┌─────────────────────────────┐
-│  1. Script Analysis (AI)    │  Chunked for large scripts
-│     + quote/citation detect │  Classifies segments needing overlays
-└────────┬────────────────────┘
-         │
-         ▼
-┌─────────────────────────────┐
-│  1.5 Text Overlay Gen       │  Pillow → styled transparent PNGs
-│       (Pillow)              │  (only for segments with quotes)
-└────────┬────────────────────┘
-         │
-         ▼
-┌─────────────────────────┐     ┌──────────────────────────┐
-│  2. Footage Retrieval   │     │  3. Voiceover Generation  │
-│     (Pexels API)        │     │     (ElevenLabs API)      │
-│     + Rate Limiter      │     │     + Request Stitching   │
-│     + Attribution       │     │     + Audio Normalization  │
-└────────┬────────────────┘     └────────┬─────────────────┘
-         │                               │
-         ▼                               ▼
-┌──────────────────────────────────────────┐
-│   4. Timeline Assembly (AI → EDL)        │  Batched, slot-based timing
-│      + overlay path merge                │  Attaches PNGs to EDL entries
-└────────────────┬─────────────────────────┘
-                 │
-                 ▼
-┌──────────────────────────────────────────┐
-│   5. Video Rendering (FFmpeg-Direct)     │  Per-clip + overlay + concat
-│      + fade-in/out overlay compositing   │  + audio
-└──────────────────────────────────────────┘
-  │
-  ▼
-Output: workspace/{script_name}/output/{script_name}.mp4
-        workspace/{script_name}/credits/credits.txt
-        workspace/{script_name}/overlays/*.png
+Input: Script (.txt file) + flags (--vertical, --captions, --overlays)
+  |
+  v
++-----------------------------+
+|  1. Script Analysis (AI)    |  Chunked for large scripts
+|     + quote/citation detect |  Classifies segments needing overlays
++--------+--------------------+
+         |
+         v
++-----------------------------+
+|  1.5 Text Overlay Gen       |  Pillow -> styled transparent PNGs
+|       (Pillow, opt-in)      |  (only when --overlays is used)
++--------+--------------------+
+         |
+         v
++-------------------------+     +--------------------------+
+|  2. Footage Retrieval   |     |  3. Voiceover Generation |
+|     (Pexels API)        |     |     (ElevenLabs API)     |
+|     + Rate Limiter      |     |     + Request Stitching  |
+|     + Attribution       |     |     + Audio Mastering     |
+|     + Auto-Orientation  |     +-----------+--------------+
++--------+----------------+                 |
+         |                                  v
+         |                    +----------------------------+
+         |                    |  3.5 Caption Gen (opt-in)  |
+         |                    |  SRT from word-level timing|
+         |                    |  5 words/cue (vert)        |
+         |                    |  8 words/cue (landscape)   |
+         |                    +-----------+----------------+
+         |                                |
+         v                                v
++------------------------------------------+
+|   4. Timeline Assembly (AI -> EDL)       |  Batched, slot-based timing
+|      + overlay path merge (if overlays)  |  Attaches PNGs to EDL entries
++----------------+-------------------------+
+                 |
+                 v
++------------------------------------------+
+|   5. Video Rendering (FFmpeg-Direct)     |  Per-clip + concat + audio
+|      + overlay compositing (opt-in)      |  + caption burn-in (opt-in)
+|      + caption burn-in (opt-in)          |  Vertical: lower-third safe zone
++------------------------------------------+
+  |
+  v
+Output: workspace/{name}/output/{name}.mp4       (landscape 1920x1080 or vertical 1080x1920)
+        workspace/{name}/credits/credits.txt
+        workspace/{name}/captions.srt             (when --captions or --vertical)
+        workspace/{name}/overlays/*.png            (when --overlays)
 ```
 
 ---
@@ -152,14 +176,17 @@ Output: workspace/{script_name}/output/{script_name}.mp4
 
 | Decision | Choice |
 |---|---|
-| **AI provider** | OpenAI-compatible API (Kimi K2.5 via Moonshot). Provider-agnostic — swap via `.env`. |
+| **AI provider** | OpenAI-compatible API (Kimi K2.5 via Moonshot). Provider-agnostic -- swap via `.env`. |
 | **Rendering engine** | FFmpeg-direct subprocess calls. MoviePy is a dependency but not used for rendering. |
-| **Segment timing** | Slot-based: each clip fills `audio_start → next segment's audio_start`. Eliminates drift. |
+| **Segment timing** | Slot-based: each clip fills `audio_start -> next segment's audio_start`. Eliminates drift. |
 | **Audio handling** | All clip audio muted. Only the narrator voiceover is heard. Mastered via dynaudnorm + loudnorm, output as stereo. |
+| **Voice settings** | ElevenLabs stability=0.75, similarity_boost=0.75, use_speaker_boost=True. Reduces whispering artifacts. |
 | **Voice selection** | User-configurable `ELEVENLABS_VOICE_ID` in `.env`. |
-| **Output format** | 1080p MP4 (H.264) by default. Resolution/FPS configurable. |
+| **Output format** | 1920x1080 (landscape) or 1080x1920 (vertical via `--vertical`). H.264 MP4, FPS configurable. |
+| **Caption positioning** | ASS virtual coordinate system (384x288) for consistent placement. Vertical: lower-third safe zone above platform UI. Landscape: bottom-center. |
 | **File organization** | Per-script project folders in `workspace/`. Auto-versioned output. |
 | **Long-form support** | Chunking at every stage (script analysis, TTS, EDL generation). Rate limiting for Pexels. |
+| **Short-form support** | `--vertical` flag switches resolution, Pexels orientation, enables captions with shorter cues. |
 | **Checkpoint/resume** | All intermediate data saved as JSON. Completed stages skipped on re-run. |
 
 ---
@@ -181,10 +208,11 @@ These features close the gap between "pipeline produces a video" and "video is r
 
 | Feature | Description |
 |---|---|
-| ~~**Text overlays for quotes/citations**~~ | ~~Stylized on-screen text for direct quotes, statistics, and source citations~~ — **DONE** (Pillow + FFmpeg) |
+| ~~**Text overlays for quotes/citations**~~ | ~~Stylized on-screen text for direct quotes, statistics, and source citations~~ -- **DONE** (Pillow + FFmpeg, opt-in via `--overlays`) |
+| ~~**Subtitle / caption generation**~~ | ~~Burn captions into the video using the timestamp data~~ -- **DONE** (SRT from word-level timing + FFmpeg `subtitles` filter, opt-in via `--captions`, auto-enabled in vertical mode) |
+| ~~**Vertical short-form support**~~ | ~~9:16 output for TikTok / Reels / Shorts~~ -- **DONE** (`--vertical` flag: 1080x1920 output, portrait Pexels footage, lower-third caption placement) |
 | **Automatic transitions** | Crossfades, dissolves, or other transitions between clips (currently cuts only in practice) |
 | **Background music** | Add a subtle ambient track under the narration |
-| **Subtitle generation** | Burn captions into the video using the timestamp data we already have |
 | **GPU-accelerated encoding** | Use NVENC/QSV for faster rendering on supported hardware |
 
 ### Lower Priority — Workflow & Tooling

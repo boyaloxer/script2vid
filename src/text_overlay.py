@@ -19,7 +19,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from src.config import OUTPUT_WIDTH, OUTPUT_HEIGHT
+import src.config as _cfg
 
 
 # ---------------------------------------------------------------------------
@@ -121,9 +121,9 @@ def _render_direct_quote(
 
     Positioned in the lower-left area of the frame.
 
-    Returns an RGBA Image at OUTPUT_WIDTH x OUTPUT_HEIGHT.
+    Returns an RGBA Image at _cfg.OUTPUT_WIDTH x _cfg.OUTPUT_HEIGHT.
     """
-    canvas = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (_cfg.OUTPUT_WIDTH, _cfg.OUTPUT_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
     font_quote = _load_font(34)
@@ -134,7 +134,7 @@ def _render_direct_quote(
     card_margin_bottom = 120
     card_padding_x = 32
     card_padding_y = 24
-    max_text_width = OUTPUT_WIDTH - 2 * card_margin_x - 2 * card_padding_x - _ACCENT_WIDTH - 16
+    max_text_width = _cfg.OUTPUT_WIDTH - 2 * card_margin_x - 2 * card_padding_x - _ACCENT_WIDTH - 16
 
     # Wrap text to fit card width
     avg_char_width = font_quote.getlength("M")
@@ -153,10 +153,10 @@ def _render_direct_quote(
         attr_h = font_attr.size + 16  # gap + text
 
     # Card dimensions
-    card_w = OUTPUT_WIDTH - 2 * card_margin_x
+    card_w = _cfg.OUTPUT_WIDTH - 2 * card_margin_x
     card_h = card_padding_y + quote_block_h + attr_h + card_padding_y
     card_x = card_margin_x
-    card_y = OUTPUT_HEIGHT - card_margin_bottom - card_h
+    card_y = _cfg.OUTPUT_HEIGHT - card_margin_bottom - card_h
 
     # Draw card background
     draw.rounded_rectangle(
@@ -203,9 +203,9 @@ def _render_statistic(
     with smaller context text below. No card background — just text with a
     subtle drop shadow for readability over any footage.
 
-    Returns an RGBA Image at OUTPUT_WIDTH x OUTPUT_HEIGHT.
+    Returns an RGBA Image at _cfg.OUTPUT_WIDTH x _cfg.OUTPUT_HEIGHT.
     """
-    canvas = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (_cfg.OUTPUT_WIDTH, _cfg.OUTPUT_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
     font_big = _load_font(80, bold=True)
@@ -224,8 +224,8 @@ def _render_statistic(
     big_h = big_bbox[3] - big_bbox[1]
 
     # Center position (slightly above center for visual balance)
-    big_x = (OUTPUT_WIDTH - big_w) // 2
-    big_y = (OUTPUT_HEIGHT // 2) - big_h - 20
+    big_x = (_cfg.OUTPUT_WIDTH - big_w) // 2
+    big_y = (_cfg.OUTPUT_HEIGHT // 2) - big_h - 20
 
     # Draw a subtle backing rectangle behind the text for readability
     pad_x, pad_y = 40, 24
@@ -247,7 +247,7 @@ def _render_statistic(
     if context_text:
         ctx_bbox = draw.textbbox((0, 0), context_text, font=font_context)
         ctx_w = ctx_bbox[2] - ctx_bbox[0]
-        ctx_x = (OUTPUT_WIDTH - ctx_w) // 2
+        ctx_x = (_cfg.OUTPUT_WIDTH - ctx_w) // 2
         ctx_y = big_y + big_h + 20
         draw.text((ctx_x, ctx_y), context_text, fill=_TEXT_SECONDARY, font=font_context)
 
@@ -266,9 +266,9 @@ def _render_source_citation(
     Render a source citation as a small pill-shaped badge in the
     lower-right corner. Minimal footprint — doesn't compete with the video.
 
-    Returns an RGBA Image at OUTPUT_WIDTH x OUTPUT_HEIGHT.
+    Returns an RGBA Image at _cfg.OUTPUT_WIDTH x _cfg.OUTPUT_HEIGHT.
     """
-    canvas = Image.new("RGBA", (OUTPUT_WIDTH, OUTPUT_HEIGHT), (0, 0, 0, 0))
+    canvas = Image.new("RGBA", (_cfg.OUTPUT_WIDTH, _cfg.OUTPUT_HEIGHT), (0, 0, 0, 0))
     draw = ImageDraw.Draw(canvas)
 
     font = _load_font(22)
@@ -293,8 +293,8 @@ def _render_source_citation(
     pill_h = text_h + 2 * pill_pad_y
 
     # Position: lower-right corner with margin
-    pill_x = OUTPUT_WIDTH - pill_w - 40
-    pill_y = OUTPUT_HEIGHT - pill_h - 40
+    pill_x = _cfg.OUTPUT_WIDTH - pill_w - 40
+    pill_y = _cfg.OUTPUT_HEIGHT - pill_h - 40
 
     # Draw pill background
     draw.rounded_rectangle(

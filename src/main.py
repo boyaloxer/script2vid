@@ -116,6 +116,7 @@ def run_pipeline(
     quality: str = "final",
     overlays: bool = False,
     captions: bool = False,
+    vertical: bool = False,
 ) -> Path:
     """
     Execute the full script-to-video pipeline.
@@ -133,6 +134,8 @@ def run_pipeline(
             statistics, and source citations. Experimental — off by default.
         captions: If True, burn closed captions into the video using
             word-level timing from the TTS alignment data.
+        vertical: If True, output is 1080x1920 (9:16) — adjusts caption
+            positioning and line width for vertical viewing.
 
     Returns:
         Path to the rendered output video.
@@ -256,6 +259,8 @@ def run_pipeline(
     # ──────────────────────────────────────────────
     srt_path = None
     if captions and alignment:
+        # Vertical videos use shorter cues (fewer words) since the frame is narrow
+        cue_words = 5 if vertical else 8
         srt_path = project_dir / "captions.srt"
         if srt_path.exists() and not fresh:
             print("\n" + "=" * 60)
@@ -264,7 +269,7 @@ def run_pipeline(
             print("\n" + "=" * 60)
             print("STAGE 3.5: Caption Generation")
             print("=" * 60)
-            srt_path = generate_srt(alignment, srt_path)
+            srt_path = generate_srt(alignment, srt_path, words_per_cue=cue_words)
 
     # ──────────────────────────────────────────────
     # Stage 4a: Timeline Assembly (AI → EDL)
@@ -306,6 +311,7 @@ def run_pipeline(
     output_path = assemble_video(
         edl, audio_path, output_dir, output_name,
         quality=quality, clips_dir=clips_dir, srt_path=srt_path,
+        vertical=vertical,
     )
 
     elapsed = time.time() - total_start
@@ -352,6 +358,11 @@ def main():
         action="store_true",
         help="Burn closed captions into the video, synced to the narrator's speech.",
     )
+    parser.add_argument(
+        "--vertical",
+        action="store_true",
+        help="Render in vertical format (1080x1920) for TikTok/Reels/YouTube Shorts.",
+    )
     args = parser.parse_args()
 
     if args.script:
@@ -373,11 +384,23 @@ def main():
         print("Error: Script is empty.")
         sys.exit(1)
 
+    # ── Vertical mode: override resolution and auto-enable captions ──
+    if args.vertical:
+        import src.config as _cfg
+        _cfg.OUTPUT_WIDTH = 1080
+        _cfg.OUTPUT_HEIGHT = 1920
+        print("[Config] Vertical mode: 1080x1920 (9:16)")
+        # Vertical short-form content should always have captions
+        if not args.captions:
+            args.captions = True
+            print("[Config] Auto-enabling captions for vertical format")
+
     project_name = _derive_project_name(script_file, script_text)
     run_pipeline(
         script_text, project_name,
         fresh=args.fresh, quality=args.quality,
         overlays=args.overlays, captions=args.captions,
+        vertical=args.vertical,
     )
 
 

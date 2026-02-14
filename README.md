@@ -21,11 +21,13 @@ All you need is **3 API keys** and **a script**. Everything else is automated.
 
 ## How It Works
 
-1. **Script Analysis** — An AI breaks your script into visual segments with search keywords (chunked for large scripts)
-2. **Footage Retrieval** — Searches Pexels for stock footage matching each segment (rate-limited, with automatic pause/resume)
-3. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps (chunked with Request Stitching for long scripts, then mastered via dynaudnorm + loudnorm for consistent volume)
-4. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using slot-based timing so footage stays in sync with narration (batched for large segment counts)
-5. **Video Rendering** — FFmpeg processes each clip individually, concatenates them, and overlays the narration audio (clip audio is muted — only the narrator is heard)
+1. **Script Analysis** — An AI breaks your script into visual segments with search keywords and quote/citation classification (chunked for large scripts)
+2. **Text Overlays** *(opt-in)* — Pillow generates styled PNG overlays for direct quotes, statistics, and source citations
+3. **Footage Retrieval** — Searches Pexels for stock footage matching each segment (rate-limited, with automatic pause/resume). Automatically pulls portrait-oriented clips in vertical mode
+4. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps (chunked with Request Stitching for long scripts, then mastered via dynaudnorm + loudnorm for consistent volume)
+5. **Caption Generation** *(opt-in)* — Generates SRT subtitles from word-level timing data, with shorter cues for vertical videos
+6. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using slot-based timing so footage stays in sync with narration (batched for large segment counts)
+7. **Video Rendering** — FFmpeg processes each clip individually, concatenates them, overlays the narration audio, and optionally burns in captions. Vertical mode positions captions in the lower-third safe zone to avoid platform UI overlap
 
 All intermediate data is saved as checkpoints. If the pipeline is interrupted, re-running picks up where it left off.
 
@@ -37,7 +39,7 @@ All intermediate data is saved as checkpoints. If the pipeline is interrupted, r
 pip install -r requirements.txt
 ```
 
-This installs: `moviepy` (used for audio duration probing), `requests` (API calls), `python-dotenv` (config loading).
+This installs: `moviepy` (used for audio duration probing), `requests` (API calls), `python-dotenv` (config loading), `Pillow` (text overlay image generation).
 
 FFmpeg is also required (used directly for all video rendering). Install it if you don't have it:
 - **Windows:** `winget install FFmpeg` or download from [ffmpeg.org](https://ffmpeg.org/download.html)
@@ -95,6 +97,9 @@ The `-u` flag ensures real-time console output (recommended).
 | `--quality draft` | Fast rendering (ultrafast FFmpeg preset) — good for previewing |
 | `--quality final` | Higher quality rendering (medium FFmpeg preset) — use for uploads |
 | `--fresh` | Ignore checkpoints and re-run all stages from scratch |
+| `--captions` | Burn closed captions into the video, synced to the narrator's speech |
+| `--overlays` | Enable text overlays for quotes, statistics, and citations (experimental) |
+| `--vertical` | Render in vertical 9:16 format (1080x1920) for TikTok / Reels / YouTube Shorts. Automatically enables `--captions` and pulls portrait-oriented footage from Pexels |
 
 Examples:
 
@@ -107,6 +112,12 @@ python -u -m src scripts/deep_thoughts_01.txt --quality final
 
 # Force re-run everything (ignore cached stages)
 python -u -m src scripts/deep_thoughts_01.txt --fresh
+
+# Landscape video with captions
+python -u -m src scripts/deep_thoughts_01.txt --quality draft --captions
+
+# Vertical short-form (TikTok/Reels/Shorts) — captions auto-enabled
+python -u -m src scripts/deep_thoughts_short_01.txt --quality draft --vertical
 ```
 
 ### Checkpoint / Resume
@@ -142,6 +153,7 @@ workspace/
     ├── clips/                        # Downloaded stock footage
     ├── audio/
     │   └── narration.mp3             # Generated voiceover (mastered: dynaudnorm + loudnorm, stereo)
+    ├── overlays/                     # Text overlay PNGs (when --overlays is used)
     ├── credits/
     │   └── credits.txt               # Pexels videographer attribution
     ├── output/
@@ -151,7 +163,8 @@ workspace/
     ├── 2_segments_with_footage.json  # Segments with matched footage
     ├── 3_alignment.json              # Character-level timing from ElevenLabs
     ├── 3_segments_with_timing.json   # Segments with audio time ranges
-    └── 4_edl.json                    # The Edit Decision List
+    ├── 4_edl.json                    # The Edit Decision List
+    └── captions.srt                  # Generated subtitle file (when --captions is used)
 ```
 
 The JSON files are saved for debugging and checkpointing — you can inspect them to see exactly what the AI decided at each stage.
@@ -177,6 +190,28 @@ The codebase uses `pathlib.Path` and `subprocess` with `ffmpeg`/`ffprobe` (no `.
 
 2. **Resuming after copying the workspace** — Checkpoint JSON files store absolute paths (e.g. `C:\...\clips\seg1_123.mp4` on Windows). If you copy the `workspace/` folder to a Mac and run without `--fresh`, the pipeline now **resolves those paths** by looking for the same clip filename in the project’s `clips/` dir, so resume works. If you prefer a clean run on the new machine, use `--fresh` and re-run from scratch.
 
+## Vertical Short-Form Content
+
+Use the `--vertical` flag to produce 9:16 (1080x1920) videos for TikTok, Instagram Reels, and YouTube Shorts:
+
+```bash
+python -u -m src scripts/my_short.txt --quality draft --vertical
+```
+
+When `--vertical` is used:
+- **Output resolution** switches to 1080x1920
+- **Pexels footage** is automatically searched in portrait orientation
+- **Closed captions** are auto-enabled and positioned in the lower-third safe zone (above platform UI buttons, below the visual center)
+- **Caption cues** are shorter (5 words vs. 8 for landscape) to fit the narrow frame
+
+For landscape videos that also need captions, just add `--captions`:
+
+```bash
+python -u -m src scripts/my_video.txt --quality draft --captions
+```
+
+Landscape captions are positioned at the bottom center of the frame with standard margins.
+
 ## Project Structure
 
 ```
@@ -186,9 +221,11 @@ src/
 ├── config.py            # Settings, API keys, per-script project folders
 ├── llm.py               # Shared LLM helper (OpenAI-compatible)
 ├── rate_limiter.py      # Generic sliding-window rate limiter
-├── script_analyzer.py   # Stage 1: Script → visual segments (chunked)
-├── footage_finder.py    # Stage 2: Pexels search → download clips
+├── script_analyzer.py   # Stage 1: Script -> visual segments (chunked, with quote classification)
+├── footage_finder.py    # Stage 2: Pexels search -> download clips (auto-detects orientation)
 ├── voiceover.py         # Stage 3: ElevenLabs TTS + timestamps + audio mastering
-├── timeline_builder.py  # Stage 4: AI → Edit Decision List (batched)
-└── video_assembler.py   # Stage 5: FFmpeg-direct → final MP4
+├── text_overlay.py      # Stage 1.5: Pillow -> styled text overlay PNGs (opt-in)
+├── captions.py          # Stage 3.5: SRT caption generation from word-level timing
+├── timeline_builder.py  # Stage 4: AI -> Edit Decision List (batched)
+└── video_assembler.py   # Stage 5: FFmpeg-direct -> final MP4 (+ caption burn-in)
 ```
