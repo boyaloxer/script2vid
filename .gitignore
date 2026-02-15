@@ -6,7 +6,11 @@ youtube_token.json
 # App icons (generated assets)
 IconKitchenScript2vid/
 
-# Working files (clips, audio, rendered videos)
+# Calendar data (user-specific scheduling)
+calendar_data.json
+
+# Channel workspaces and legacy workspace (clips, audio, rendered videos)
+channels/
 workspace/
 
 # Scripts and thumbnails (content assets)

@@ -53,23 +53,42 @@ OUTPUT_FPS = int(os.getenv("OUTPUT_FPS", "30"))
 # Paths
 # ---------------------------------------------------------------------------
 WORK_DIR = _project_root / "workspace"
-WORK_DIR.mkdir(parents=True, exist_ok=True)
+CHANNELS_DIR = _project_root / "channels"
 
 
-def create_project_dirs(project_name: str) -> dict:
+def create_project_dirs(project_name: str, channel: str | None = None) -> dict:
     """
-    Create a per-script project folder inside workspace.
-    Returns a dict of paths: project_dir, clips_dir, audio_dir, output_dir, credits_dir.
+    Create a per-script project folder.
 
-    Structure:
+    When *channel* is provided the workspace is nested under that channel's
+    directory so every channel is fully self-contained::
+
+        channels/
+        └── deep_thoughts/
+            └── workspace/
+                └── short_01/
+                    ├── audio/
+                    ├── clips/
+                    ├── credits/
+                    ├── overlays/
+                    └── output/
+
+    Without a channel the legacy layout is used::
+
         workspace/
         └── deep_thoughts_01/
-            ├── audio/
-            ├── clips/
-            ├── credits/
-            └── output/
+            └── ...
+
+    Returns a dict of paths.
     """
-    project_dir = WORK_DIR / project_name
+    if channel:
+        root = CHANNELS_DIR / channel / "workspace"
+    else:
+        root = WORK_DIR
+
+    root.mkdir(parents=True, exist_ok=True)
+
+    project_dir = root / project_name
     clips_dir = project_dir / "clips"
     audio_dir = project_dir / "audio"
     output_dir = project_dir / "output"

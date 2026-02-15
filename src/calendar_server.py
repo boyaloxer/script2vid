@@ -1,0 +1,1166 @@
+"""
+Calendar Web GUI — A local web server serving an interactive release calendar.
+
+Serves a self-contained HTML/CSS/JS calendar at http://localhost:5555
+with a REST API for the frontend to read/write calendar data.
+
+Usage:
+    python -m src.calendar_server          # starts on port 5555
+    python -m src.calendar_server --port 8080
+"""
+
+import argparse
+import json
+import sys
+import webbrowser
+from functools import partial
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from urllib.parse import urlparse, parse_qs
+
+from src import calendar_manager as cm
+
+_PORT = 5555
+
+
+# ════════════════════════════════════════════════════════════════════
+#  HTTP Handler
+# ════════════════════════════════════════════════════════════════════
+
+class CalendarHandler(BaseHTTPRequestHandler):
+    """Route requests to the calendar API or serve the HTML frontend."""
+
+    def log_message(self, fmt, *args):
+        """Quieter logging — just method + path."""
+        sys.stderr.write(f"[CalendarGUI] {args[0]}\n")
+
+    # ── Helpers ───────────────────────────────────────────────────
+
+    def _send_json(self, data: dict | list, status: int = 200):
+        body = json.dumps(data, indent=2, default=str).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _send_html(self, html: str):
+        body = html.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def _read_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", 0))
+        raw = self.rfile.read(length)
+        return json.loads(raw) if raw else {}
+
+    def _path_parts(self) -> tuple[str, dict]:
+        parsed = urlparse(self.path)
+        return parsed.path.rstrip("/"), parse_qs(parsed.query)
+
+    # ── GET ───────────────────────────────────────────────────────
+
+    def do_GET(self):
+        path, qs = self._path_parts()
+
+        if path == "" or path == "/":
+            self._send_html(_CALENDAR_HTML)
+        elif path == "/api/calendar":
+            self._send_json(cm.load_calendar())
+        elif path == "/api/channels":
+            self._send_json(cm.list_channels())
+        elif path == "/api/slots":
+            cal = cm.load_calendar()
+            slots = cal["slots"]
+            # Optional filtering
+            ch = qs.get("channel", [None])[0]
+            if ch:
+                slots = [s for s in slots if s["channel_id"] == ch]
+            self._send_json(slots)
+        else:
+            self.send_error(404)
+
+    # ── POST ──────────────────────────────────────────────────────
+
+    def do_POST(self):
+        path, _ = self._path_parts()
+
+        if path == "/api/channels":
+            body = self._read_body()
+            try:
+                result = cm.add_channel(
+                    channel_id=body["channel_id"],
+                    name=body["name"],
+                    days=body["days"],
+                    time_str=body["time"],
+                    timezone=body.get("timezone", "America/New_York"),
+                    category=body.get("category", "people"),
+                    tags=body.get("tags", []),
+                )
+                self._send_json(result, 201)
+            except (KeyError, ValueError) as e:
+                self._send_json({"error": str(e)}, 400)
+
+        elif path == "/api/slots/generate":
+            body = self._read_body()
+            new = cm.generate_slots(
+                channel_id=body.get("channel_id"),
+                weeks=body.get("weeks", 4),
+            )
+            self._send_json({"created": len(new), "slots": new})
+
+        elif path == "/api/publish-due":
+            body = self._read_body()
+            results = cm.publish_due(hours_ahead=body.get("hours", 48))
+            self._send_json(results)
+
+        else:
+            self.send_error(404)
+
+    # ── PUT ───────────────────────────────────────────────────────
+
+    def do_PUT(self):
+        path, _ = self._path_parts()
+
+        # PUT /api/slots/<id>
+        if path.startswith("/api/slots/"):
+            slot_id = path.split("/")[-1]
+            body = self._read_body()
+            result = cm.update_slot(slot_id, **body)
+            if result:
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Slot not found"}, 404)
+
+        # PUT /api/channels/<id>
+        elif path.startswith("/api/channels/"):
+            channel_id = path.split("/")[-1]
+            body = self._read_body()
+            try:
+                result = cm.add_channel(
+                    channel_id=channel_id,
+                    name=body.get("name", channel_id),
+                    days=body.get("days", []),
+                    time_str=body.get("time", "12:00"),
+                    timezone=body.get("timezone", "America/New_York"),
+                    category=body.get("category", "people"),
+                    tags=body.get("tags", []),
+                )
+                self._send_json(result)
+            except (KeyError, ValueError) as e:
+                self._send_json({"error": str(e)}, 400)
+        else:
+            self.send_error(404)
+
+    # ── DELETE ────────────────────────────────────────────────────
+
+    def do_DELETE(self):
+        path, _ = self._path_parts()
+
+        if path.startswith("/api/channels/"):
+            channel_id = path.split("/")[-1]
+            ok = cm.remove_channel(channel_id)
+            self._send_json({"deleted": ok})
+
+        elif path.startswith("/api/slots/"):
+            slot_id = path.split("/")[-1]
+            ok = cm.delete_slot(slot_id)
+            self._send_json({"deleted": ok})
+
+        else:
+            self.send_error(404)
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Embedded HTML / CSS / JS
+# ════════════════════════════════════════════════════════════════════
+
+_CALENDAR_HTML = r"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>script2vid — Release Calendar</title>
+<style>
+  :root {
+    --bg:       #0f172a;
+    --surface:  #1e293b;
+    --surface2: #334155;
+    --border:   #475569;
+    --text:     #e2e8f0;
+    --text-dim: #94a3b8;
+    --accent:   #6366f1;
+    --blue:     #3b82f6;
+    --amber:    #f59e0b;
+    --green:    #10b981;
+    --red:      #ef4444;
+    --pink:     #ec4899;
+    --radius:   8px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    min-height: 100vh;
+  }
+
+  /* ── Header ─────────────────────────────── */
+  header {
+    background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  .logo {
+    font-size: 20px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .logo span { color: var(--accent); }
+
+  .nav-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .nav-controls button {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 6px 14px;
+    cursor: pointer;
+    font-size: 14px;
+    transition: background 0.15s;
+  }
+  .nav-controls button:hover { background: var(--border); }
+  #current-month {
+    font-size: 18px;
+    font-weight: 600;
+    min-width: 180px;
+    text-align: center;
+  }
+
+  .header-actions {
+    display: flex;
+    gap: 8px;
+  }
+  .btn {
+    padding: 8px 16px;
+    border-radius: var(--radius);
+    border: none;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: opacity 0.15s;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-outline {
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border);
+  }
+
+  /* ── Channel Tabs ─────────────────────── */
+  .tab-bar {
+    display: flex;
+    border-bottom: 2px solid var(--surface2);
+    padding: 0 24px;
+    gap: 0;
+    overflow-x: auto;
+  }
+  .channel-tab {
+    padding: 12px 24px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    color: var(--text-dim);
+    border-bottom: 3px solid transparent;
+    margin-bottom: -2px;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+    position: relative;
+  }
+  .channel-tab:hover { color: var(--text); }
+  .channel-tab.active {
+    color: #fff;
+    border-bottom-color: var(--accent);
+  }
+  .tab-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .tab-badge {
+    font-size: 11px;
+    padding: 1px 7px;
+    border-radius: 10px;
+    background: var(--surface2);
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+  .channel-tab.active .tab-badge {
+    background: rgba(99,102,241,0.3);
+    color: var(--accent);
+  }
+  .chip-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .channel-info {
+    padding: 10px 24px;
+    font-size: 12px;
+    color: var(--text-dim);
+    border-bottom: 1px solid var(--surface2);
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .channel-info-item {
+    display: flex;
+    align-items: center;
+    gap: 5px;
+  }
+
+  /* ── Calendar grid ──────────────────────── */
+  .calendar-container { padding: 20px 24px; }
+
+  .day-headers {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+    margin-bottom: 4px;
+  }
+  .day-header {
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    padding: 8px 0;
+  }
+
+  .calendar-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 4px;
+  }
+
+  .day-cell {
+    background: var(--surface);
+    border-radius: var(--radius);
+    min-height: 110px;
+    padding: 8px;
+    border: 1px solid transparent;
+    transition: border-color 0.15s;
+    position: relative;
+  }
+  .day-cell:hover { border-color: var(--border); }
+  .day-cell.other-month { opacity: 0.35; }
+  .day-cell.today { border-color: var(--accent); }
+
+  .day-number {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-bottom: 6px;
+  }
+  .day-cell.today .day-number {
+    color: var(--accent);
+    background: rgba(99, 102, 241, 0.15);
+    width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+    border-radius: 50%;
+    margin: -4px 0 4px -4px;
+  }
+
+  /* ── Slot chips ─────────────────────────── */
+  .slot-chip {
+    padding: 4px 8px;
+    border-radius: 5px;
+    font-size: 11px;
+    margin-bottom: 3px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: transform 0.1s;
+    border-left: 3px solid;
+  }
+  .slot-chip:hover { transform: translateX(2px); }
+
+  .slot-placeholder {
+    background: rgba(71, 85, 105, 0.25);
+    border-left-color: var(--border);
+    color: var(--text-dim);
+    border-style: dashed;
+  }
+  .slot-assigned {
+    background: rgba(59, 130, 246, 0.15);
+    border-left-color: var(--blue);
+    color: var(--blue);
+  }
+  .slot-uploaded {
+    background: rgba(245, 158, 11, 0.15);
+    border-left-color: var(--amber);
+    color: var(--amber);
+  }
+  .slot-published {
+    background: rgba(16, 185, 129, 0.15);
+    border-left-color: var(--green);
+    color: var(--green);
+  }
+
+  .slot-time { font-weight: 600; }
+
+  /* ── Stats bar ──────────────────────────── */
+  .stats-bar {
+    padding: 14px 24px;
+    display: flex;
+    gap: 24px;
+    border-top: 1px solid var(--surface2);
+    font-size: 13px;
+    color: var(--text-dim);
+  }
+  .stat { display: flex; align-items: center; gap: 6px; }
+  .stat-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .stat-count { font-weight: 700; color: var(--text); }
+
+  /* ── Modal ──────────────────────────────── */
+  .modal-overlay {
+    display: none;
+    position: fixed; inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 100;
+    justify-content: center;
+    align-items: center;
+    backdrop-filter: blur(4px);
+  }
+  .modal-overlay.active { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 28px;
+    width: 500px;
+    max-width: 92vw;
+    max-height: 85vh;
+    overflow-y: auto;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  }
+  .modal h2 {
+    font-size: 18px;
+    margin-bottom: 20px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .modal-close {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 22px;
+    cursor: pointer;
+    padding: 4px 8px;
+    border-radius: 4px;
+  }
+  .modal-close:hover { background: var(--surface2); color: var(--text); }
+
+  .field { margin-bottom: 16px; }
+  .field label {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 6px;
+  }
+  .field input, .field textarea, .field select {
+    width: 100%;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    font-family: inherit;
+  }
+  .field textarea { resize: vertical; min-height: 80px; }
+  .field input:focus, .field textarea:focus, .field select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .status-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 600;
+    text-transform: uppercase;
+  }
+
+  .modal-actions {
+    display: flex;
+    gap: 8px;
+    margin-top: 20px;
+    justify-content: flex-end;
+  }
+  .btn-danger { background: var(--red); color: #fff; }
+
+  /* ── Add Channel Modal ──────────────────── */
+  .days-grid {
+    display: flex; gap: 6px; flex-wrap: wrap;
+  }
+  .day-toggle {
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 13px;
+    transition: all 0.15s;
+  }
+  .day-toggle.active {
+    background: var(--accent);
+    color: #fff;
+    border-color: var(--accent);
+  }
+
+  /* ── Responsive ─────────────────────────── */
+  @media (max-width: 900px) {
+    .day-cell { min-height: 80px; padding: 4px; }
+    .slot-chip { font-size: 10px; padding: 3px 5px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">📅 <span>script2vid</span> Calendar</div>
+  <div class="nav-controls">
+    <button id="prev-month">◀</button>
+    <div id="current-month">February 2026</div>
+    <button id="next-month">▶</button>
+    <button id="today-btn">Today</button>
+  </div>
+  <div class="header-actions">
+    <button class="btn btn-outline" id="btn-generate">+ Generate Slots</button>
+    <button class="btn btn-primary" id="btn-add-channel">+ Add Channel</button>
+  </div>
+</header>
+
+<div class="tab-bar" id="tab-bar"></div>
+<div class="channel-info" id="channel-info"></div>
+
+<div class="calendar-container">
+  <div class="day-headers">
+    <div class="day-header">Sun</div>
+    <div class="day-header">Mon</div>
+    <div class="day-header">Tue</div>
+    <div class="day-header">Wed</div>
+    <div class="day-header">Thu</div>
+    <div class="day-header">Fri</div>
+    <div class="day-header">Sat</div>
+  </div>
+  <div class="calendar-grid" id="calendar-grid"></div>
+</div>
+
+<div class="stats-bar" id="stats-bar"></div>
+
+<!-- Slot Detail Modal -->
+<div class="modal-overlay" id="slot-modal-overlay">
+  <div class="modal" id="slot-modal"></div>
+</div>
+
+<!-- Add Channel Modal -->
+<div class="modal-overlay" id="channel-modal-overlay">
+  <div class="modal" id="channel-modal">
+    <h2>Add Channel <button class="modal-close" onclick="closeModal('channel-modal-overlay')">✕</button></h2>
+    <div class="field">
+      <label>Channel ID (slug)</label>
+      <input id="ch-id" placeholder="e.g. deep_thoughts" />
+    </div>
+    <div class="field">
+      <label>Display Name</label>
+      <input id="ch-name" placeholder="e.g. Deep Thoughts For Zen" />
+    </div>
+    <div class="field">
+      <label>Release Days</label>
+      <div class="days-grid" id="ch-days">
+        <div class="day-toggle" data-day="mon">Mon</div>
+        <div class="day-toggle" data-day="tue">Tue</div>
+        <div class="day-toggle" data-day="wed">Wed</div>
+        <div class="day-toggle" data-day="thu">Thu</div>
+        <div class="day-toggle" data-day="fri">Fri</div>
+        <div class="day-toggle" data-day="sat">Sat</div>
+        <div class="day-toggle" data-day="sun">Sun</div>
+      </div>
+    </div>
+    <div class="field">
+      <label>Time (HH:MM)</label>
+      <input id="ch-time" type="time" value="14:00" />
+    </div>
+    <div class="field">
+      <label>Timezone</label>
+      <select id="ch-tz">
+        <option value="America/New_York">Eastern (America/New_York)</option>
+        <option value="America/Chicago">Central (America/Chicago)</option>
+        <option value="America/Denver">Mountain (America/Denver)</option>
+        <option value="America/Los_Angeles">Pacific (America/Los_Angeles)</option>
+        <option value="UTC">UTC</option>
+        <option value="Europe/London">London (Europe/London)</option>
+        <option value="Europe/Berlin">Berlin (Europe/Berlin)</option>
+        <option value="Asia/Tokyo">Tokyo (Asia/Tokyo)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>YouTube Category</label>
+      <select id="ch-category">
+        <option value="people">People & Blogs</option>
+        <option value="education">Education</option>
+        <option value="entertainment">Entertainment</option>
+        <option value="howto">How-to & Style</option>
+        <option value="news">News & Politics</option>
+        <option value="science">Science & Technology</option>
+        <option value="comedy">Comedy</option>
+        <option value="film">Film & Animation</option>
+        <option value="music">Music</option>
+        <option value="gaming">Gaming</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>Default Tags (comma-separated)</label>
+      <input id="ch-tags" placeholder="e.g. philosophy, deep thoughts, shorts" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('channel-modal-overlay')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveChannel()">Save Channel</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generate Slots Modal -->
+<div class="modal-overlay" id="generate-modal-overlay">
+  <div class="modal" id="generate-modal">
+    <h2>Generate Placeholder Slots <button class="modal-close" onclick="closeModal('generate-modal-overlay')">✕</button></h2>
+    <div class="field">
+      <label>Channel (leave blank for all)</label>
+      <select id="gen-channel"><option value="">All channels</option></select>
+    </div>
+    <div class="field">
+      <label>Weeks ahead</label>
+      <input id="gen-weeks" type="number" value="4" min="1" max="52" />
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-outline" onclick="closeModal('generate-modal-overlay')">Cancel</button>
+      <button class="btn btn-primary" onclick="generateSlots()">Generate</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════════
+//  State
+// ═══════════════════════════════════════════════════════════════
+let calendarData = { channels: {}, slots: [] };
+let currentDate  = new Date();
+let activeFilter = null;  // null = show all
+
+const STATUS_COLORS = {
+  placeholder: { bg: 'rgba(71,85,105,0.25)', border: '#475569', text: '#94a3b8' },
+  assigned:    { bg: 'rgba(59,130,246,0.15)', border: '#3b82f6', text: '#3b82f6' },
+  uploaded:    { bg: 'rgba(245,158,11,0.15)', border: '#f59e0b', text: '#f59e0b' },
+  published:   { bg: 'rgba(16,185,129,0.15)', border: '#10b981', text: '#10b981' },
+};
+const STATUS_LABELS = {
+  placeholder: '⬜ Empty',
+  assigned:    '🔵 Assigned',
+  uploaded:    '🟡 Uploaded',
+  published:   '🟢 Published',
+};
+
+// ═══════════════════════════════════════════════════════════════
+//  API
+// ═══════════════════════════════════════════════════════════════
+async function fetchCalendar() {
+  const res = await fetch('/api/calendar');
+  calendarData = await res.json();
+  render();
+}
+
+async function apiPost(url, body) {
+  return fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json());
+}
+
+async function apiPut(url, body) {
+  return fetch(url, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(r => r.json());
+}
+
+async function apiDelete(url) {
+  return fetch(url, { method: 'DELETE' }).then(r => r.json());
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Rendering
+// ═══════════════════════════════════════════════════════════════
+function render() {
+  renderTabs();
+  renderChannelInfo();
+  renderCalendar();
+  renderStats();
+}
+
+function renderTabs() {
+  const el = document.getElementById('tab-bar');
+  const channels = calendarData.channels || {};
+  const ids = Object.keys(channels);
+
+  // Auto-select first channel if none active
+  if (!activeFilter && ids.length > 0) {
+    activeFilter = ids[0];
+  }
+
+  let html = '';
+  for (const [id, ch] of Object.entries(channels)) {
+    const active = activeFilter === id ? 'active' : '';
+    // Count slots for this channel
+    const count = calendarData.slots.filter(s => s.channel_id === id).length;
+    html += `<div class="channel-tab ${active}" onclick="setFilter('${id}')">
+      <span class="tab-dot" style="background:${ch.colour || '#6366f1'}"></span>
+      ${ch.name}
+      <span class="tab-badge">${count}</span>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderChannelInfo() {
+  const el = document.getElementById('channel-info');
+  if (!activeFilter) { el.innerHTML = ''; return; }
+  const ch = calendarData.channels[activeFilter];
+  if (!ch) { el.innerHTML = ''; return; }
+
+  const cad = ch.cadence || {};
+  const days = (cad.days || []).map(d => d.slice(0,3).charAt(0).toUpperCase() + d.slice(1,3)).join(', ');
+  const cat = ch.default_category || 'people';
+
+  // Slot counts for this channel
+  const slots = calendarData.slots.filter(s => s.channel_id === activeFilter);
+  const counts = { placeholder: 0, assigned: 0, uploaded: 0, published: 0 };
+  slots.forEach(s => counts[s.status] = (counts[s.status] || 0) + 1);
+
+  el.innerHTML = `
+    <div class="channel-info-item"><strong>${days}</strong> at ${cad.time || '?'} ${cad.timezone || ''}</div>
+    <div class="channel-info-item">${cat}</div>
+    <div class="channel-info-item" style="margin-left:auto;">
+      <span style="color:#475569">${counts.placeholder} empty</span> &middot;
+      <span style="color:#3b82f6">${counts.assigned} ready</span> &middot;
+      <span style="color:#f59e0b">${counts.uploaded} uploaded</span> &middot;
+      <span style="color:#10b981">${counts.published} live</span>
+    </div>
+  `;
+}
+
+function renderCalendar() {
+  const grid = document.getElementById('calendar-grid');
+  const year = currentDate.getFullYear();
+  const month = currentDate.getMonth();
+
+  // Month label
+  const monthNames = ['January','February','March','April','May','June',
+                      'July','August','September','October','November','December'];
+  document.getElementById('current-month').textContent =
+    `${monthNames[month]} ${year}`;
+
+  // First day of month and total days
+  const firstDay = new Date(year, month, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(year, month + 1, 0).getDate();
+  const daysInPrev  = new Date(year, month, 0).getDate();
+
+  // Build index: date string → slots
+  const slotsByDate = {};
+  for (const slot of calendarData.slots) {
+    if (activeFilter && slot.channel_id !== activeFilter) continue;
+    try {
+      const d = new Date(slot.scheduled_time);
+      const key = `${d.getFullYear()}-${d.getMonth()}-${d.getDate()}`;
+      (slotsByDate[key] = slotsByDate[key] || []).push(slot);
+    } catch(e) {}
+  }
+
+  const today = new Date();
+  const todayKey = `${today.getFullYear()}-${today.getMonth()}-${today.getDate()}`;
+
+  let html = '';
+  // Previous month filler
+  for (let i = firstDay - 1; i >= 0; i--) {
+    const d = daysInPrev - i;
+    html += `<div class="day-cell other-month"><div class="day-number">${d}</div></div>`;
+  }
+
+  // Current month days
+  for (let d = 1; d <= daysInMonth; d++) {
+    const key = `${year}-${month}-${d}`;
+    const isToday = key === todayKey;
+    const slots = slotsByDate[key] || [];
+
+    html += `<div class="day-cell ${isToday ? 'today' : ''}">`;
+    html += `<div class="day-number">${d}</div>`;
+
+    for (const slot of slots) {
+      const sc = STATUS_COLORS[slot.status] || STATUS_COLORS.placeholder;
+      const ch = calendarData.channels[slot.channel_id] || {};
+      const chColour = ch.colour || '#6366f1';
+      const timeStr = formatTime(slot.scheduled_time);
+      const label = slot.title
+        ? truncate(slot.title, 18)
+        : (ch.name ? truncate(ch.name, 14) : 'Empty');
+      const cls = `slot-${slot.status}`;
+
+      html += `<div class="slot-chip ${cls}" onclick="openSlot('${slot.id}')"
+                    title="${slot.title || 'Empty slot'} — ${slot.status}">
+        <span class="slot-time">${timeStr}</span>
+        ${label}
+      </div>`;
+    }
+    html += '</div>';
+  }
+
+  // Next month filler (fill to complete row)
+  const totalCells = firstDay + daysInMonth;
+  const remainder = totalCells % 7;
+  if (remainder > 0) {
+    for (let d = 1; d <= 7 - remainder; d++) {
+      html += `<div class="day-cell other-month"><div class="day-number">${d}</div></div>`;
+    }
+  }
+
+  grid.innerHTML = html;
+}
+
+function renderStats() {
+  const bar = document.getElementById('stats-bar');
+  const counts = { placeholder: 0, assigned: 0, uploaded: 0, published: 0 };
+  for (const slot of calendarData.slots) {
+    if (activeFilter && slot.channel_id !== activeFilter) continue;
+    counts[slot.status] = (counts[slot.status] || 0) + 1;
+  }
+
+  const colors = { placeholder: '#475569', assigned: '#3b82f6',
+                   uploaded: '#f59e0b', published: '#10b981' };
+  let html = '';
+  for (const [status, count] of Object.entries(counts)) {
+    html += `<div class="stat">
+      <span class="stat-dot" style="background:${colors[status]}"></span>
+      <span class="stat-count">${count}</span> ${status}
+    </div>`;
+  }
+  const total = Object.values(counts).reduce((a,b) => a+b, 0);
+  html += `<div class="stat" style="margin-left:auto;">
+    <strong>${total}</strong> total slots
+  </div>`;
+  bar.innerHTML = html;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Slot detail modal
+// ═══════════════════════════════════════════════════════════════
+function openSlot(slotId) {
+  const slot = calendarData.slots.find(s => s.id === slotId);
+  if (!slot) return;
+  const ch = calendarData.channels[slot.channel_id] || {};
+  const sc = STATUS_COLORS[slot.status];
+  const lbl = STATUS_LABELS[slot.status];
+
+  let dt;
+  try { dt = new Date(slot.scheduled_time); } catch(e) { dt = null; }
+  const dateStr = dt ? dt.toLocaleString('en-US', {
+    weekday: 'long', year: 'numeric', month: 'long', day: 'numeric',
+    hour: 'numeric', minute: '2-digit', timeZoneName: 'short'
+  }) : slot.scheduled_time;
+
+  const modal = document.getElementById('slot-modal');
+  modal.innerHTML = `
+    <h2>
+      <span style="color:${sc.text}">${lbl}</span>
+      <button class="modal-close" onclick="closeModal('slot-modal-overlay')">✕</button>
+    </h2>
+    <div class="field">
+      <label>Channel</label>
+      <div style="padding:6px 0;display:flex;align-items:center;gap:8px;">
+        <span class="chip-dot" style="background:${ch.colour || '#6366f1'}"></span>
+        ${ch.name || slot.channel_id}
+      </div>
+    </div>
+    <div class="field">
+      <label>Scheduled Time</label>
+      <div style="padding:6px 0;">${dateStr}</div>
+    </div>
+    <div class="field">
+      <label>Title</label>
+      <input id="edit-title" value="${escHtml(slot.title || '')}"
+             placeholder="Enter video title..." />
+    </div>
+    <div class="field">
+      <label>Description</label>
+      <textarea id="edit-desc" placeholder="Enter description...">${escHtml(slot.description || '')}</textarea>
+    </div>
+    <div class="field">
+      <label>Tags</label>
+      <input id="edit-tags" value="${escHtml((slot.tags || []).join(', '))}"
+             placeholder="tag1, tag2, tag3" />
+    </div>
+    <div class="field">
+      <label>Video File</label>
+      <input id="edit-video" value="${escHtml(slot.video_path || '')}"
+             placeholder="path/to/video.mp4" />
+    </div>
+    ${slot.youtube_url ? `
+    <div class="field">
+      <label>YouTube URL</label>
+      <a href="${slot.youtube_url}" target="_blank"
+         style="color:var(--blue);text-decoration:none;">${slot.youtube_url}</a>
+    </div>` : ''}
+    <div class="modal-actions">
+      <button class="btn btn-danger" onclick="deleteSlot('${slot.id}')">Delete Slot</button>
+      <button class="btn btn-outline" onclick="closeModal('slot-modal-overlay')">Cancel</button>
+      <button class="btn btn-primary" onclick="saveSlot('${slot.id}')">Save</button>
+    </div>
+  `;
+  document.getElementById('slot-modal-overlay').classList.add('active');
+}
+
+async function saveSlot(slotId) {
+  const title = document.getElementById('edit-title').value.trim();
+  const desc  = document.getElementById('edit-desc').value.trim();
+  const tags  = document.getElementById('edit-tags').value
+                  .split(',').map(t => t.trim()).filter(Boolean);
+  const video = document.getElementById('edit-video').value.trim();
+
+  const updates = {};
+  if (title) updates.title = title;
+  if (desc)  updates.description = desc;
+  if (tags.length) updates.tags = tags;
+  if (video) {
+    updates.video_path = video;
+    updates.status = 'assigned';
+  }
+
+  await apiPut(`/api/slots/${slotId}`, updates);
+  closeModal('slot-modal-overlay');
+  await fetchCalendar();
+}
+
+async function deleteSlot(slotId) {
+  if (!confirm('Delete this slot?')) return;
+  await apiDelete(`/api/slots/${slotId}`);
+  closeModal('slot-modal-overlay');
+  await fetchCalendar();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Channel modal
+// ═══════════════════════════════════════════════════════════════
+function openChannelModal() {
+  // Reset form
+  document.getElementById('ch-id').value = '';
+  document.getElementById('ch-name').value = '';
+  document.getElementById('ch-time').value = '14:00';
+  document.getElementById('ch-tags').value = '';
+  document.getElementById('ch-short').checked = false;
+  document.querySelectorAll('#ch-days .day-toggle').forEach(d => d.classList.remove('active'));
+  document.getElementById('channel-modal-overlay').classList.add('active');
+}
+
+document.querySelectorAll('#ch-days .day-toggle').forEach(el => {
+  el.addEventListener('click', () => el.classList.toggle('active'));
+});
+
+async function saveChannel() {
+  const id   = document.getElementById('ch-id').value.trim();
+  const name = document.getElementById('ch-name').value.trim();
+  const time = document.getElementById('ch-time').value;
+  const tz   = document.getElementById('ch-tz').value;
+  const cat  = document.getElementById('ch-category').value;
+  const tags = document.getElementById('ch-tags').value
+                 .split(',').map(t => t.trim()).filter(Boolean);
+  const days = [];
+  document.querySelectorAll('#ch-days .day-toggle.active').forEach(d => {
+    days.push(d.dataset.day);
+  });
+
+  if (!id || !name || !days.length) {
+    alert('Please fill in channel ID, name, and select at least one day.');
+    return;
+  }
+
+  await apiPost('/api/channels', {
+    channel_id: id, name, days, time, timezone: tz,
+    category: cat, tags,
+  });
+  closeModal('channel-modal-overlay');
+  await fetchCalendar();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Generate modal
+// ═══════════════════════════════════════════════════════════════
+function openGenerateModal() {
+  const sel = document.getElementById('gen-channel');
+  sel.innerHTML = '<option value="">All channels</option>';
+  for (const [id, ch] of Object.entries(calendarData.channels)) {
+    sel.innerHTML += `<option value="${id}">${ch.name}</option>`;
+  }
+  document.getElementById('generate-modal-overlay').classList.add('active');
+}
+
+async function generateSlots() {
+  const ch    = document.getElementById('gen-channel').value || undefined;
+  const weeks = parseInt(document.getElementById('gen-weeks').value) || 4;
+  const res = await apiPost('/api/slots/generate', { channel_id: ch, weeks });
+  closeModal('generate-modal-overlay');
+  alert(`Created ${res.created} placeholder slot(s).`);
+  await fetchCalendar();
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Utilities
+// ═══════════════════════════════════════════════════════════════
+function setFilter(channelId) {
+  activeFilter = channelId;
+  currentDate = new Date();  // Reset to current month when switching tabs
+  render();
+}
+
+function closeModal(id) {
+  document.getElementById(id).classList.remove('active');
+}
+
+function formatTime(iso) {
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+  } catch(e) { return ''; }
+}
+
+function truncate(str, n) {
+  return str.length > n ? str.slice(0, n) + '…' : str;
+}
+
+function escHtml(str) {
+  const div = document.createElement('div');
+  div.textContent = str;
+  return div.innerHTML;
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  Navigation
+// ═══════════════════════════════════════════════════════════════
+document.getElementById('prev-month').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth() - 1);
+  render();
+});
+document.getElementById('next-month').addEventListener('click', () => {
+  currentDate.setMonth(currentDate.getMonth() + 1);
+  render();
+});
+document.getElementById('today-btn').addEventListener('click', () => {
+  currentDate = new Date();
+  render();
+});
+
+document.getElementById('btn-add-channel').addEventListener('click', openChannelModal);
+document.getElementById('btn-generate').addEventListener('click', openGenerateModal);
+
+// Close modals on overlay click
+document.querySelectorAll('.modal-overlay').forEach(overlay => {
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) overlay.classList.remove('active');
+  });
+});
+
+// Close modals on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    document.querySelectorAll('.modal-overlay.active').forEach(m => m.classList.remove('active'));
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+//  Init
+// ═══════════════════════════════════════════════════════════════
+fetchCalendar();
+</script>
+</body>
+</html>"""
+
+
+# ════════════════════════════════════════════════════════════════════
+#  Server start
+# ════════════════════════════════════════════════════════════════════
+
+def start_server(port: int = _PORT) -> None:
+    """Start the calendar web GUI and open it in the default browser."""
+    server = HTTPServer(("127.0.0.1", port), CalendarHandler)
+    url = f"http://localhost:{port}"
+    print(f"[Calendar] Starting web GUI at {url}")
+    print("[Calendar] Press Ctrl+C to stop.\n")
+    webbrowser.open(url)
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        print("\n[Calendar] Server stopped.")
+        server.server_close()
+
+
+def main():
+    parser = argparse.ArgumentParser(description="script2vid Calendar Web GUI")
+    parser.add_argument("--port", type=int, default=_PORT,
+                        help=f"Port to run the server on (default: {_PORT}).")
+    args = parser.parse_args()
+    start_server(port=args.port)
+
+
+if __name__ == "__main__":
+    main()
