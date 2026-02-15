@@ -13,7 +13,7 @@ batches to maintain transition continuity.
 import json
 import time
 
-from src.llm import chat_json
+from src.utils.llm import chat_json
 
 # Maximum segments per LLM call — keeps output well within token limits
 _BATCH_SIZE = 25

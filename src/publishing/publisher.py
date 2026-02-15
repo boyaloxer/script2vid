@@ -40,7 +40,7 @@ from googleapiclient.http import MediaFileUpload
 _SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 
 # Default locations for credentials
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CLIENT_SECRETS = _PROJECT_ROOT / "client_secrets.json"
 _TOKEN_FILE = _PROJECT_ROOT / "youtube_token.json"
 

@@ -300,7 +300,7 @@ ready to publish." Currently these post-production steps are done manually.
   timestamp data we already have.~~ **DONE** — implemented in `captions.py` +
   `video_assembler.py`. SRT generated from ElevenLabs word-level timing, burned in
   via FFmpeg `subtitles` filter with ASS styling. Opt-in via `--captions` flag,
-  auto-enabled in vertical mode. Landscape: bottom-center, 8 words/cue. Vertical:
+  opt-in via `--captions`. Landscape: bottom-center, 8 words/cue. Vertical:
   lower-third safe zone, 5 words/cue.
 - ~~**Vertical short-form support** — 9:16 output for TikTok, Reels, YouTube
   Shorts.~~ **DONE** — `--vertical` flag switches to 1080x1920, auto-pulls portrait

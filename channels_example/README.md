@@ -33,7 +33,7 @@ channels/
 
 4. **Register the channel in the calendar:**
    ```
-   python -m src.calendar_manager add-channel your_channel \
+   python -m src.publishing.calendar_manager add-channel your_channel \
        --name "Your Channel Name" \
        --days mon,wed,fri --time 14:00 \
        --tz America/New_York \
@@ -43,7 +43,7 @@ channels/
 
 5. **Generate placeholder slots:**
    ```
-   python -m src.calendar_manager generate --weeks 4
+   python -m src.publishing.calendar_manager generate --weeks 4
    ```
 
 6. **Create a video with the channel switch:**

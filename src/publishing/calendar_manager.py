@@ -10,19 +10,19 @@ Data lives in calendar_data.json at the project root.
 Quick-start
 -----------
     # 1. Define a channel + cadence
-    python -m src.calendar_manager add-channel deep_thoughts \\
+    python -m src.publishing.calendar_manager add-channel deep_thoughts \\
         --name "Deep Thoughts For Zen" \\
         --days mon,wed,fri --time 14:00 --tz America/New_York \\
         --category entertainment --short
 
     # 2. Generate placeholder slots for the next 4 weeks
-    python -m src.calendar_manager generate --weeks 4
+    python -m src.publishing.calendar_manager generate --weeks 4
 
     # 3. View the schedule
-    python -m src.calendar_manager status
+    python -m src.publishing.calendar_manager status
 
     # 4. Open the web calendar
-    python -m src.calendar_manager view
+    python -m src.publishing.calendar_manager view
 """
 
 import argparse
@@ -35,7 +35,7 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 # ── Paths ─────────────────────────────────────────────────────────
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CALENDAR_FILE = _PROJECT_ROOT / "calendar_data.json"
 
 # ── Constants ─────────────────────────────────────────────────────
@@ -362,7 +362,7 @@ def get_due_slots(hours_ahead: int = 48) -> list[dict]:
 
 def publish_due(hours_ahead: int = 48) -> list[dict]:
     """Upload + schedule all videos that are due within *hours_ahead*."""
-    from src.publisher import upload_to_youtube  # avoid circular at module level
+    from src.publishing.publisher import upload_to_youtube  # avoid circular
 
     cal = load_calendar()
     due = get_due_slots(hours_ahead)
@@ -503,7 +503,7 @@ def print_status(channel_id: str | None = None) -> None:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="python -m src.calendar_manager",
+        prog="python -m src.publishing.calendar_manager",
         description="script2vid Release Calendar",
     )
     sub = parser.add_subparsers(dest="command")
@@ -603,7 +603,7 @@ def main(argv: list[str] | None = None) -> None:
         publish_due(hours_ahead=args.hours)
 
     elif args.command == "view":
-        from src.calendar_server import start_server
+        from src.web.calendar_server import start_server
         start_server()
 
     else:

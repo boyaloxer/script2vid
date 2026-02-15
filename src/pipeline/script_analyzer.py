@@ -11,7 +11,7 @@ Segments are renumbered sequentially after merging.
 
 import time
 
-from src.llm import chat_json
+from src.utils.llm import chat_json
 
 # Max characters per LLM chunk — smaller chunks produce shorter JSON responses,
 # preventing LLM output truncation that causes JSONDecodeError.

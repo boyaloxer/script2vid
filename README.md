@@ -1,6 +1,6 @@
 # script2vid
 
-Turn a written script into a fully assembled video with AI-selected stock footage and narrated voiceover — no manual editing required. Supports both short-form and long-form content (tested up to 1+ hour videos).
+Turn a written script into a fully assembled video with AI-selected stock footage and narrated voiceover — no manual editing required. Supports both short-form vertical content (Shorts/Reels/TikTok) and long-form videos (tested up to 1+ hour).
 
 ## What You Provide
 
@@ -28,6 +28,7 @@ All you need is **3 API keys** and **a script**. Everything else is automated.
 5. **Caption Generation** *(opt-in)* — Generates SRT subtitles from word-level timing data, with shorter cues for vertical videos
 6. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using slot-based timing so footage stays in sync with narration (batched for large segment counts)
 7. **Video Rendering** — FFmpeg processes each clip individually, concatenates them, overlays the narration audio, and optionally burns in captions. Vertical mode positions captions in the lower-third safe zone to avoid platform UI overlap
+8. **YouTube Publishing** *(opt-in)* — Uploads the rendered video to YouTube via the Data API v3, with optional scheduled publishing
 
 All intermediate data is saved as checkpoints. If the pipeline is interrupted, re-running picks up where it left off.
 
@@ -39,7 +40,7 @@ All intermediate data is saved as checkpoints. If the pipeline is interrupted, r
 pip install -r requirements.txt
 ```
 
-This installs: `moviepy` (used for audio duration probing), `requests` (API calls), `python-dotenv` (config loading), `Pillow` (text overlay image generation).
+This installs: `moviepy` (audio probing), `requests` (API calls), `python-dotenv` (config), `Pillow` (text overlays), `google-api-python-client` + `google-auth-oauthlib` (YouTube API), `tzdata` (timezone support on Windows).
 
 FFmpeg is also required (used directly for all video rendering). Install it if you don't have it:
 - **Windows:** `winget install FFmpeg` or download from [ffmpeg.org](https://ffmpeg.org/download.html)
@@ -68,17 +69,34 @@ ELEVENLABS_API_KEY=your_key_here
 ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # optional — pick a voice from ElevenLabs
 ```
 
-### 3. (Optional) Adjust output settings
+### 3. (Optional) YouTube API setup
 
-In `.env` you can also set:
+To enable automated YouTube uploads and scheduled publishing:
 
-```env
-OUTPUT_RESOLUTION=1920x1080   # default: 1080p
-OUTPUT_FPS=30                 # default: 30fps
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable the **YouTube Data API v3**
+3. Create **OAuth 2.0 Desktop App** credentials
+4. Download as `client_secrets.json` and place it in the project root
+5. On first upload, a browser window will open for authorization. The resulting token is saved to `youtube_token.json`
 
-# Only needed if FFmpeg auto-detection hangs on Windows. Leave blank to auto-detect.
-# FFMPEG_PATH=C:\\path\\to\\ffmpeg.exe
+### 4. (Optional) Channel setup
+
+To use the `--channel` flag for one-step scheduled publishing, set up your channels:
+
+```bash
+# Add a channel to the calendar
+python -m src.publishing.calendar_manager add-channel \
+  --id deep_thoughts \
+  --name "Deep Thoughts For Zen" \
+  --days mon wed fri \
+  --time 14:00 \
+  --timezone America/New_York
+
+# Generate placeholder slots
+python -m src.publishing.calendar_manager generate --weeks 4
 ```
+
+Each channel can have its own default pipeline settings. See `channels_example/` for setup instructions.
 
 ## Usage
 
@@ -99,30 +117,49 @@ The `-u` flag ensures real-time console output (recommended).
 | `--fresh` | Ignore checkpoints and re-run all stages from scratch |
 | `--captions` | Burn closed captions into the video, synced to the narrator's speech |
 | `--overlays` | Enable text overlays for quotes, statistics, and citations (experimental) |
-| `--vertical` | Render in vertical 9:16 format (1080x1920) for TikTok / Reels / YouTube Shorts. Automatically enables `--captions` and pulls portrait-oriented footage from Pexels |
+| `--vertical` | Render in vertical 9:16 format (1080×1920) for TikTok / Reels / YouTube Shorts |
+| `--channel ID` | The single switch: routes workspace, applies channel defaults, renders, assigns to calendar, uploads to YouTube with scheduled time |
+| `--publish` | Upload the rendered video to YouTube after the pipeline completes |
+| `--schedule ISO` | Schedule YouTube publish time (ISO 8601). Implies `--publish` |
+| `--title` | YouTube video title (defaults to project name) |
+| `--description` | YouTube video description |
+| `--tags` | Comma-separated YouTube tags |
+| `--category` | YouTube category: `people`, `education`, `entertainment`, `news`, etc. |
+| `--privacy` | YouTube privacy: `public`, `private`, `unlisted` (default: `private`) |
 
-Examples:
+### Examples
 
 ```bash
 # Draft quality for quick preview
 python -u -m src scripts/deep_thoughts_01.txt --quality draft
 
-# Final quality for YouTube upload
-python -u -m src scripts/deep_thoughts_01.txt --quality final
+# Final quality landscape video with captions
+python -u -m src scripts/my_video.txt --quality final --captions
 
-# Force re-run everything (ignore cached stages)
-python -u -m src scripts/deep_thoughts_01.txt --fresh
+# Vertical short-form for YouTube Shorts
+python -u -m src scripts/my_short.txt --vertical --captions
 
-# Landscape video with captions
-python -u -m src scripts/deep_thoughts_01.txt --quality draft --captions
+# One-step channel workflow: render + assign to calendar + upload to YouTube
+python -u -m src scripts/my_short.txt --channel deep_thoughts
 
-# Vertical short-form (TikTok/Reels/Shorts) — captions auto-enabled
-python -u -m src scripts/deep_thoughts_short_01.txt --quality draft --vertical
+# Manual YouTube upload with scheduling
+python -u -m src scripts/my_video.txt --publish --schedule 2026-03-01T14:00:00Z --title "My Video"
 ```
+
+### The `--channel` Flag
+
+The `--channel` flag is the primary way to produce and publish videos. When used:
+
+1. **Workspace** routes to `channels/<id>/workspace/` for clean per-channel organization
+2. **Default settings** load from `channels/<id>/default_settings.json` (vertical, captions, quality, etc.)
+3. **Pipeline** runs with those merged settings (explicit CLI flags always override)
+4. **Calendar** auto-assigns the rendered video to the next open slot for that channel
+5. **YouTube** uploads the video as private, scheduled to go public at the slot's time
+6. **Calendar** updates the slot status from `placeholder` → `uploaded`
 
 ### Checkpoint / Resume
 
-Each pipeline stage saves its output as a JSON file. If the pipeline is interrupted (API error, timeout, crash), simply re-run the same command. Completed stages are detected and skipped automatically:
+Each pipeline stage saves its output as a JSON file. If interrupted, simply re-run the same command. Completed stages are detected and skipped:
 
 ```
 STAGE 1: Script Analysis [CACHED — skipping]
@@ -131,43 +168,123 @@ STAGE 3: Voiceover Generation
 ...
 ```
 
-This is especially valuable for long-form content where Stages 1-2 can take hours due to API rate limits.
+### Auto-versioning
 
-### Re-running the same script
-
-Running the same script again won't overwrite previous output. Videos are auto-versioned:
+Running the same script again won't overwrite previous output:
 
 - First run: `deep_thoughts_01.mp4`
 - Second run: `deep_thoughts_01_v2.mp4`
 - Third run: `deep_thoughts_01_v3.mp4`
 
-This lets you compare results and upload the best one.
+## Release Calendar
+
+A built-in calendar system for scheduling and tracking video releases across multiple channels.
+
+### CLI
+
+```bash
+# View current schedule
+python -m src.publishing.calendar_manager status
+
+# Add a channel
+python -m src.publishing.calendar_manager add-channel \
+  --id business --name "Business Channel" --days tue thu --time 11:00
+
+# Generate 4 weeks of placeholder slots
+python -m src.publishing.calendar_manager generate --weeks 4
+
+# Upload any videos due in the next 48 hours
+python -m src.publishing.calendar_manager publish-due
+```
+
+### Web UI
+
+```bash
+python -m src.web.calendar_server
+```
+
+Opens the web interface at `http://localhost:5555` with two views:
+
+**Pipeline** (`/`) — create videos from the browser:
+- Select a channel, and its default settings auto-populate (vertical, captions, quality, publish, tags, etc.)
+- Drag-and-drop a `.txt` script file or paste script text directly
+- Enter a title and description
+- Override any channel defaults with toggle switches
+- Hit "Start Pipeline" — the job runs in the background with real-time stage progress and console log
+- Job history shows recent runs and their status
+
+**Calendar** (`/calendar`) — view and manage the release schedule:
+- Per-channel tabs with slot counts and schedule info
+- Monthly calendar grid showing all scheduled slots
+- Click any slot to view/edit details, assign videos, or delete
+- Modals for adding channels and generating placeholder slots
 
 ## Output
 
-Each script gets its own folder in `workspace/`, named after the script file:
+Each script gets its own folder in the workspace:
 
 ```
-workspace/
-└── deep_thoughts_01/
-    ├── clips/                        # Downloaded stock footage
-    ├── audio/
-    │   └── narration.mp3             # Generated voiceover (mastered: dynaudnorm + loudnorm, stereo)
-    ├── overlays/                     # Text overlay PNGs (when --overlays is used)
-    ├── credits/
-    │   └── credits.txt               # Pexels videographer attribution
-    ├── output/
-    │   ├── deep_thoughts_01.mp4      # First run
-    │   └── deep_thoughts_01_v2.mp4   # Second run (auto-versioned)
-    ├── 1_segments.json               # Script segments from AI analysis
-    ├── 2_segments_with_footage.json  # Segments with matched footage
-    ├── 3_alignment.json              # Character-level timing from ElevenLabs
-    ├── 3_segments_with_timing.json   # Segments with audio time ranges
-    ├── 4_edl.json                    # The Edit Decision List
-    └── captions.srt                  # Generated subtitle file (when --captions is used)
+channels/
+└── deep_thoughts/
+    ├── default_settings.json       # Channel pipeline defaults
+    └── workspace/
+        └── short_01/
+            ├── clips/              # Downloaded stock footage
+            ├── audio/
+            │   └── narration.mp3   # Generated voiceover (mastered)
+            ├── overlays/           # Text overlay PNGs (when --overlays used)
+            ├── credits/
+            │   └── credits.txt     # Pexels videographer attribution
+            ├── output/
+            │   └── short_01.mp4    # Rendered video
+            ├── 1_segments.json     # AI script analysis
+            ├── 2_segments_with_footage.json
+            ├── 3_alignment.json    # Character-level timing
+            ├── 3_segments_with_timing.json
+            ├── 4_edl.json          # Edit Decision List
+            └── captions.srt        # Subtitle file (when --captions used)
 ```
 
-The JSON files are saved for debugging and checkpointing — you can inspect them to see exactly what the AI decided at each stage.
+Without `--channel`, the legacy `workspace/` directory is used instead.
+
+## Project Structure
+
+```
+src/
+├── main.py                        # Orchestrator — runs the full pipeline
+├── config.py                      # Settings, API keys, project directories
+├── __init__.py
+├── __main__.py                    # Entry point for python -m src
+│
+├── pipeline/                      # Core video production stages
+│   ├── script_analyzer.py         # Stage 1: Script → visual segments
+│   ├── footage_finder.py          # Stage 2: Pexels search → download clips
+│   ├── voiceover.py               # Stage 3: ElevenLabs TTS + timestamps
+│   ├── text_overlay.py            # Stage 1.5: Styled text overlay PNGs
+│   ├── captions.py                # Stage 3.5: SRT caption generation
+│   ├── timeline_builder.py        # Stage 4: AI → Edit Decision List
+│   └── video_assembler.py         # Stage 5: FFmpeg → final MP4
+│
+├── publishing/                    # YouTube + scheduling
+│   ├── publisher.py               # YouTube Data API v3 upload
+│   └── calendar_manager.py        # Release calendar CLI + logic
+│
+├── web/                           # Web interfaces
+│   ├── calendar_server.py         # Threaded HTTP server (pipeline + calendar)
+│   ├── pipeline_runner.py         # Background job runner for web UI
+│   └── static/
+│       ├── pipeline.html          # Pipeline UI (create videos)
+│       └── calendar.html          # Calendar UI (manage schedule)
+│
+└── utils/                         # Shared helpers
+    ├── llm.py                     # OpenAI-compatible chat helper
+    └── rate_limiter.py            # Sliding-window API rate limiter
+
+scripts/                           # Your .txt video scripts
+channels/                          # Per-channel workspaces + settings (gitignored)
+channels_example/                  # Template for setting up new channels
+docs/                              # Development roadmap and planning notes
+```
 
 ## Long-Form Content
 
@@ -182,50 +299,10 @@ The pipeline is designed for long-form videos (1+ hours). Key features that enab
 
 **Estimated pipeline time for a 1-hour video:** ~4-5 hours (mostly Pexels API rate limiting).
 
-## Developing on Windows and macOS
+## Cross-Platform
 
-The codebase uses `pathlib.Path` and `subprocess` with `ffmpeg`/`ffprobe` (no `.exe`), so it runs on both Windows and macOS. Two things to be aware of:
+The codebase uses `pathlib.Path` and `subprocess` with `ffmpeg`/`ffprobe`, so it runs on both Windows and macOS/Linux.
 
-1. **FFmpeg** — On Mac, install with `brew install ffmpeg` and leave `FFMPEG_PATH` unset in `.env`. The Windows note in `.env.example` (setting `FFMPEG_PATH` if auto-detect hangs) is for Windows only; on Mac, auto-detect is fine.
-
-2. **Resuming after copying the workspace** — Checkpoint JSON files store absolute paths (e.g. `C:\...\clips\seg1_123.mp4` on Windows). If you copy the `workspace/` folder to a Mac and run without `--fresh`, the pipeline now **resolves those paths** by looking for the same clip filename in the project’s `clips/` dir, so resume works. If you prefer a clean run on the new machine, use `--fresh` and re-run from scratch.
-
-## Vertical Short-Form Content
-
-Use the `--vertical` flag to produce 9:16 (1080x1920) videos for TikTok, Instagram Reels, and YouTube Shorts:
-
-```bash
-python -u -m src scripts/my_short.txt --quality draft --vertical
-```
-
-When `--vertical` is used:
-- **Output resolution** switches to 1080x1920
-- **Pexels footage** is automatically searched in portrait orientation
-- **Closed captions** are auto-enabled and positioned in the lower-third safe zone (above platform UI buttons, below the visual center)
-- **Caption cues** are shorter (5 words vs. 8 for landscape) to fit the narrow frame
-
-For landscape videos that also need captions, just add `--captions`:
-
-```bash
-python -u -m src scripts/my_video.txt --quality draft --captions
-```
-
-Landscape captions are positioned at the bottom center of the frame with standard margins.
-
-## Project Structure
-
-```
-scripts/                 # Put your .txt scripts here
-src/
-├── main.py              # Orchestrator — runs the full pipeline
-├── config.py            # Settings, API keys, per-script project folders
-├── llm.py               # Shared LLM helper (OpenAI-compatible)
-├── rate_limiter.py      # Generic sliding-window rate limiter
-├── script_analyzer.py   # Stage 1: Script -> visual segments (chunked, with quote classification)
-├── footage_finder.py    # Stage 2: Pexels search -> download clips (auto-detects orientation)
-├── voiceover.py         # Stage 3: ElevenLabs TTS + timestamps + audio mastering
-├── text_overlay.py      # Stage 1.5: Pillow -> styled text overlay PNGs (opt-in)
-├── captions.py          # Stage 3.5: SRT caption generation from word-level timing
-├── timeline_builder.py  # Stage 4: AI -> Edit Decision List (batched)
-└── video_assembler.py   # Stage 5: FFmpeg-direct -> final MP4 (+ caption burn-in)
-```
+- **FFmpeg** — On Mac, install with `brew install ffmpeg` and leave `FFMPEG_PATH` unset. The `FFMPEG_PATH` env var is only needed if auto-detection hangs on Windows.
+- **Timezone data** — The `tzdata` package is included in requirements for Windows support (Linux/Mac have system tzdata).
+- **Checkpoint portability** — Checkpoint JSON files store absolute paths. If you copy the workspace between machines, the pipeline resolves paths by filename. Use `--fresh` for a clean start if needed.

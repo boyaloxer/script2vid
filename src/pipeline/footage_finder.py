@@ -13,7 +13,7 @@ import requests
 
 import src.config as _cfg
 from src.config import PEXELS_API_KEY, PEXELS_BASE_URL
-from src.rate_limiter import RateLimiter
+from src.utils.rate_limiter import RateLimiter
 
 # Shared rate limiter for all Pexels API calls in this module
 _pexels_limiter = RateLimiter(

@@ -3,5 +3,12 @@
   "captions": true,
   "overlays": false,
   "quality": "final",
-  "fresh": false
+  "fresh": false,
+
+  "publish": true,
+  "privacy": "private",
+  "category": "people",
+  "tags": "your, default, tags",
+  "title": null,
+  "description": null
 }

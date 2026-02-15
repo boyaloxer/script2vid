@@ -17,15 +17,15 @@ import time
 from pathlib import Path, PureWindowsPath
 
 from src.config import create_project_dirs
-from src.script_analyzer import analyze_script
-from src.footage_finder import find_footage_for_segments
-from src.voiceover import generate_voiceover, map_segments_to_time_ranges
-from src.text_overlay import generate_overlays_for_segments
-from src.captions import generate_srt
-from src.timeline_builder import build_timeline
-from src.video_assembler import assemble_video
-from src.publisher import upload_to_youtube
-from src.calendar_manager import (
+from src.pipeline.script_analyzer import analyze_script
+from src.pipeline.footage_finder import find_footage_for_segments
+from src.pipeline.voiceover import generate_voiceover, map_segments_to_time_ranges
+from src.pipeline.text_overlay import generate_overlays_for_segments
+from src.pipeline.captions import generate_srt
+from src.pipeline.timeline_builder import build_timeline
+from src.pipeline.video_assembler import assemble_video
+from src.publishing.publisher import upload_to_youtube
+from src.publishing.calendar_manager import (
     auto_assign as calendar_auto_assign,
     load_calendar,
     update_slot,
@@ -456,7 +456,7 @@ def main():
             print("Available channels:")
             for ch_id in cal.get("channels", {}):
                 print(f"  - {ch_id}")
-            print("\nAdd one with: python -m src.calendar_manager add-channel ...")
+            print("\nAdd one with: python -m src.publishing.calendar_manager add-channel ...")
             sys.exit(1)
 
         # Load channel default_settings.json (pipeline switch defaults)
@@ -465,11 +465,13 @@ def main():
             defaults = _load_json(defaults_path) or {}
             print(f"[Channel] Loaded defaults from {defaults_path.name}")
 
-            # Apply defaults for boolean flags that were NOT explicitly set
+            # Apply defaults for flags that were NOT explicitly set on the CLI.
             # argparse stores False for store_true flags that weren't passed,
-            # so we detect "user didn't pass it" by checking if it's still the
-            # argparse default.  Explicit CLI flags always win.
-            _raw = sys.argv  # check what the user actually typed
+            # so we detect "user didn't pass it" by checking sys.argv.
+            # Explicit CLI flags always win.
+            _raw = sys.argv
+
+            # Boolean pipeline flags
             if not any(x in _raw for x in ("--vertical",))   and "vertical" in defaults:
                 args.vertical = defaults["vertical"]
             if not any(x in _raw for x in ("--captions",))    and "captions" in defaults:
@@ -481,10 +483,25 @@ def main():
             if not any(x in _raw for x in ("--quality",))     and "quality" in defaults:
                 args.quality = defaults["quality"]
 
+            # Publishing flags
+            if not any(x in _raw for x in ("--publish",))     and "publish" in defaults:
+                args.publish = defaults["publish"]
+            if not any(x in _raw for x in ("--privacy",))     and "privacy" in defaults:
+                args.privacy = defaults["privacy"]
+            if not any(x in _raw for x in ("--category",))    and "category" in defaults:
+                args.category = defaults["category"]
+            if not any(x in _raw for x in ("--tags",))        and "tags" in defaults:
+                args.tags = defaults["tags"]
+            if not any(x in _raw for x in ("--title",))       and "title" in defaults:
+                args.title = defaults["title"]
+            if not any(x in _raw for x in ("--description",)) and "description" in defaults:
+                args.description = defaults["description"]
+
             applied = []
             if defaults.get("vertical") and args.vertical:  applied.append("vertical")
             if defaults.get("captions") and args.captions:  applied.append("captions")
             if defaults.get("overlays") and args.overlays:  applied.append("overlays")
+            if defaults.get("publish") and args.publish:    applied.append("publish")
             if applied:
                 print(f"[Channel] Defaults applied: {', '.join(applied)}")
         else:
@@ -517,13 +534,13 @@ def main():
     )
 
     # ══════════════════════════════════════════════════════════════
-    #  --channel: the single switch — assign + upload + schedule
+    #  Post-render: Calendar assignment + YouTube publishing
     # ══════════════════════════════════════════════════════════════
-    if args.channel:
-        yt_title = args.title or project_name.replace("_", " ").title()
-        yt_tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
+    yt_title = args.title or project_name.replace("_", " ").title()
+    yt_tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
 
-        # Step 1: Assign to next open calendar slot
+    if args.channel:
+        # ── Calendar assignment (always happens with --channel) ──
         print("\n" + "=" * 60)
         print("STAGE 6a: Calendar — Assigning to next open slot")
         print("=" * 60)
@@ -539,57 +556,57 @@ def main():
 
         if not slot:
             print("  No open slots available.")
-            print("  Run 'python -m src.calendar_manager generate' to create more.")
+            print("  Run 'python -m src.publishing.calendar_manager generate' to create more.")
             print(f"  Video still saved at: {output_path}")
         else:
             print(f"  Slot:      {slot['id']}")
             print(f"  Scheduled: {slot['scheduled_time']}")
 
-            # Step 2: Upload to YouTube with the slot's scheduled time
-            print("\n" + "=" * 60)
-            print("STAGE 6b: YouTube — Uploading with scheduled release")
-            print("=" * 60)
-            try:
-                result = upload_to_youtube(
-                    video_path=output_path,
-                    title=yt_title,
-                    description=args.description or "",
-                    tags=yt_tags,
-                    category=args.category,
-                    privacy="private",  # Required for scheduled publishing
-                    publish_at=slot["scheduled_time"],
-                    is_short=args.vertical,
-                    contains_synthetic_media=False,
-                )
+            # ── Upload to YouTube (only if publish is enabled) ──
+            if args.publish:
+                print("\n" + "=" * 60)
+                print("STAGE 6b: YouTube — Uploading with scheduled release")
+                print("=" * 60)
+                try:
+                    result = upload_to_youtube(
+                        video_path=output_path,
+                        title=yt_title,
+                        description=args.description or "",
+                        tags=yt_tags,
+                        category=args.category,
+                        privacy="private",  # Required for scheduled publishing
+                        publish_at=slot["scheduled_time"],
+                        is_short=args.vertical,
+                        contains_synthetic_media=False,
+                    )
 
-                # Step 3: Update calendar to "uploaded"
-                update_slot(
-                    slot["id"],
-                    status="uploaded",
-                    youtube_video_id=result["video_id"],
-                    youtube_url=result["url"],
-                )
-                print(f"\n  [Calendar] Slot {slot['id']} -> uploaded")
-                print(f"  [Calendar] Will auto-publish at {slot['scheduled_time']}")
+                    # Update calendar to "uploaded"
+                    update_slot(
+                        slot["id"],
+                        status="uploaded",
+                        youtube_video_id=result["video_id"],
+                        youtube_url=result["url"],
+                    )
+                    print(f"\n  [Calendar] Slot {slot['id']} -> uploaded")
+                    print(f"  [Calendar] Will auto-publish at {slot['scheduled_time']}")
 
-            except FileNotFoundError as e:
-                print(f"\n{e}")
-                print("  YouTube upload skipped — video assigned to calendar slot.")
-                print("  Run 'python -m src.calendar_manager publish-due' later.")
-            except Exception as e:
-                print(f"\n[YouTube] Upload failed: {e}")
-                print("  Video is assigned to the calendar slot.")
-                print("  Run 'python -m src.calendar_manager publish-due' to retry.")
+                except FileNotFoundError as e:
+                    print(f"\n{e}")
+                    print("  YouTube upload skipped — video assigned to calendar slot.")
+                    print("  Run 'python -m src.publishing.calendar_manager publish-due' later.")
+                except Exception as e:
+                    print(f"\n[YouTube] Upload failed: {e}")
+                    print("  Video is assigned to the calendar slot.")
+                    print("  Run 'python -m src.publishing.calendar_manager publish-due' to retry.")
+            else:
+                print(f"\n  [Calendar] Slot assigned. Publishing is off for this channel.")
+                print(f"  To upload later: python -m src.publishing.calendar_manager publish-due")
 
-    # ══════════════════════════════════════════════════════════════
-    #  --publish: manual upload (without calendar)
-    # ══════════════════════════════════════════════════════════════
     elif args.publish:
+        # ── Standalone upload (no channel / no calendar) ──
         print("\n" + "=" * 60)
         print("STAGE 6: YouTube Publishing")
         print("=" * 60)
-        yt_title = args.title or project_name.replace("_", " ").title()
-        yt_tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
         try:
             result = upload_to_youtube(
                 video_path=output_path,

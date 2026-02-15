@@ -14,8 +14,8 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 
 - **Script Analysis** — AI decomposes script into visual segments with keywords, mood, descriptions, and **quote/citation classification** (`direct_quote`, `statistic`, `source_citation`, or `none`). Chunked processing for large scripts (5K chars/chunk with retry logic).
 - **Text Overlays** *(opt-in, `--overlays`)* — Pillow-generated styled PNG overlays for quotes, statistics, and source citations. Three card types: direct-quote cards (dark rounded rect with accent line), statistic callouts (large bold number with backing), and source-citation pills (small lower-right badge). Composited onto video via FFmpeg with fade-in / fade-out animation. Experimental — alignment can vary.
-- **Closed Captions** *(opt-in, `--captions`; auto-enabled in vertical mode)* — SRT subtitle generation from ElevenLabs word-level timing data, burned into the video via FFmpeg's `subtitles` filter with ASS styling. Landscape mode: bottom-center, 8 words/cue. Vertical mode: lower-third safe zone (above platform UI, below visual center), 5 words/cue.
-- **Vertical Short-Form Support** *(`--vertical`)* — Renders in 9:16 (1080x1920) for TikTok, Reels, and YouTube Shorts. Automatically switches Pexels searches to portrait orientation, enables captions with shorter cues, and positions captions in the lower-third safe zone.
+- **Closed Captions** *(opt-in, `--captions`)* — SRT subtitle generation from ElevenLabs word-level timing data, burned into the video via FFmpeg's `subtitles` filter with ASS styling. Landscape mode: bottom-center, 8 words/cue. Vertical mode: lower-third safe zone (above platform UI, below visual center), 5 words/cue.
+- **Vertical Short-Form Support** *(`--vertical`)* — Renders in 9:16 (1080x1920) for TikTok, Reels, and YouTube Shorts. Automatically switches Pexels searches to portrait orientation. Captions are opt-in via `--captions` (not auto-enabled).
 - **Footage Retrieval** — Searches Pexels, scores/ranks results, downloads best matches, avoids repeats. Integrated rate limiter (200 req/hr sliding window). Captures Pexels attribution for credits. **Auto-detects orientation** (landscape or portrait) based on output resolution.
 - **Voiceover Generation** — ElevenLabs TTS with character-level timestamps. Chunked with Request Stitching for consistent voice prosody across long scripts. Voice settings tuned for stability (0.75) with speaker boost enabled.
 - **Audio Mastering** — 3-stage post-processing chain: force mono (safety net), `dynaudnorm` (per-frame volume levelling to eliminate chunk-to-chunk differences and tame spikes), then `loudnorm` EBU R128 normalization (-16 LUFS, YouTube target). Output duplicated to stereo for universal playback compatibility.
@@ -27,6 +27,10 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 - **Checkpoint/Resume** — Completed pipeline stages are cached. Re-runs skip finished stages automatically.
 - **Rendering Quality Options** — `--quality draft` (ultrafast) for iteration, `--quality final` (medium) for production.
 - **Pexels Attribution** — Automatic `credits.txt` generation with videographer details.
+- **YouTube Publishing** *(`--publish`, `--schedule`, or via `--channel`)* — Uploads rendered videos to YouTube via the Data API v3 with full metadata support: title, description, tags, category, privacy, scheduled publish time, language, embeddable, made-for-kids, license, and public stats. OAuth 2.0 authentication with token caching.
+- **Release Calendar** — Built-in scheduling system for managing video releases across multiple channels. Channels define cadence (days + time + timezone), default category/tags. Placeholder slots are auto-generated weeks ahead. Videos are auto-assigned to the next open slot. CLI (`python -m src.publishing.calendar_manager`) and web GUI (`/calendar`). Slot statuses: placeholder → assigned → uploaded → published.
+- **Channel-Based Workspaces** — Each channel gets its own directory under `channels/<id>/` with a `default_settings.json` for pipeline defaults (vertical, captions, quality, publish, category, tags, privacy) and a `workspace/` subdirectory for video projects. The `--channel` flag is the single switch: loads defaults, routes workspace, renders, assigns to calendar, uploads to YouTube.
+- **Web UI** — Browser-based interface at `http://localhost:5555`. Pipeline view (`/`): select channel, drag-and-drop script, enter title/description, toggle overrides, start pipeline with real-time progress. Calendar view (`/calendar`): interactive monthly calendar with per-channel tabs. Threaded server handles concurrent requests.
 
 ### What's Been Tested
 
@@ -86,7 +90,7 @@ Sends the script to **ElevenLabs TTS** with `with_timestamps` enabled:
 
 ### 3.5. Caption Generation (opt-in)
 
-When `--captions` is enabled (or auto-enabled by `--vertical`), generates an SRT subtitle file from the word-level timing data extracted during voiceover generation:
+When `--captions` is enabled, generates an SRT subtitle file from the word-level timing data extracted during voiceover generation:
 - Words are grouped into readable cues — **8 words per cue** for landscape, **5 words per cue** for vertical (narrower frame)
 - Cue boundaries prefer sentence breaks (periods, question marks, exclamation marks) when possible
 - The SRT file is saved as `captions.srt` in the project folder and cached across re-runs
@@ -209,7 +213,7 @@ These features close the gap between "pipeline produces a video" and "video is r
 | Feature | Description |
 |---|---|
 | ~~**Text overlays for quotes/citations**~~ | ~~Stylized on-screen text for direct quotes, statistics, and source citations~~ -- **DONE** (Pillow + FFmpeg, opt-in via `--overlays`) |
-| ~~**Subtitle / caption generation**~~ | ~~Burn captions into the video using the timestamp data~~ -- **DONE** (SRT from word-level timing + FFmpeg `subtitles` filter, opt-in via `--captions`, auto-enabled in vertical mode) |
+| ~~**Subtitle / caption generation**~~ | ~~Burn captions into the video using the timestamp data~~ -- **DONE** (SRT from word-level timing + FFmpeg `subtitles` filter, opt-in via `--captions`) |
 | ~~**Vertical short-form support**~~ | ~~9:16 output for TikTok / Reels / Shorts~~ -- **DONE** (`--vertical` flag: 1080x1920 output, portrait Pexels footage, lower-third caption placement) |
 | **Automatic transitions** | Crossfades, dissolves, or other transitions between clips (currently cuts only in practice) |
 | **Background music** | Add a subtle ambient track under the narration |
@@ -264,7 +268,7 @@ This isn't a black-box video file — it's a fully decomposed, inspectable, modi
 | **Adjust narration** | Re-generate specific TTS chunks, adjust voice settings per section |
 | **Manage captions** | Edit SRT cues, reposition, restyle |
 | **Generate metadata** | Titles, descriptions, timestamps, thumbnail prompts — all from project data |
-| **Publish** | Schedule uploads to YouTube, TikTok, Instagram via their APIs |
+| ~~**Publish**~~ | ~~Schedule uploads to YouTube via their APIs~~ — **DONE** (YouTube Data API v3, `--channel` auto-scheduling, release calendar). TikTok/Instagram TBD. |
 | **Multi-project awareness** | "Use the same narrator voice as last week's video" |
 
 ### Architecture Implications

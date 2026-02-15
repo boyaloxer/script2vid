@@ -5,7 +5,7 @@ Used by script_analyzer and timeline_builder.
 
 import json
 import requests
-from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL
+from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL  # noqa: E402
 
 
 def chat(
