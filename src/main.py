@@ -384,16 +384,12 @@ def main():
         print("Error: Script is empty.")
         sys.exit(1)
 
-    # ── Vertical mode: override resolution and auto-enable captions ──
+    # ── Vertical mode: override resolution ──
     if args.vertical:
         import src.config as _cfg
         _cfg.OUTPUT_WIDTH = 1080
         _cfg.OUTPUT_HEIGHT = 1920
         print("[Config] Vertical mode: 1080x1920 (9:16)")
-        # Vertical short-form content should always have captions
-        if not args.captions:
-            args.captions = True
-            print("[Config] Auto-enabling captions for vertical format")
 
     project_name = _derive_project_name(script_file, script_text)
     run_pipeline(

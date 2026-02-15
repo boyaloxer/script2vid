@@ -220,5 +220,198 @@ These features close the gap between "pipeline produces a video" and "video is r
 | Feature | Description |
 |---|---|
 | **Batch processing** | Run multiple scripts in sequence overnight |
-| **Web UI** | Simple interface for uploading scripts and downloading videos |
 | **Cost estimation** | Log estimated API costs before running, so the user can confirm |
+
+---
+
+## Long-Term Vision: Agentic Video Editor
+
+### The Idea
+
+script2vid currently works as a CLI pipeline directed by the user through an external tool (Cursor, terminal). The user writes or requests scripts, chooses flags, runs the pipeline, then comes back to ask for titles, descriptions, thumbnails, and tweaks. The "agent" is really the user + Cursor orchestrating the pipeline.
+
+The long-term evolution is to collapse all of that into a **single conversational product** — an agentic video editor where the user simply talks to an AI agent that understands the project and has direct access to all editing tools.
+
+Think of it like CapCut, but instead of learning where every UI button is, you just type (or speak) what you want:
+
+- *"Make a 60-second vertical short about how money works"*
+- *"The intro feels slow — trim the first clip by 2 seconds"*
+- *"Swap the footage in segment 4 for something more dramatic"*
+- *"Add captions and export for TikTok"*
+- *"Give me 5 title options and a thumbnail prompt"*
+- *"Schedule this to post tomorrow at 2pm"*
+
+### Why This Is Feasible
+
+The foundation already exists. Our pipeline generates **rich structured data** at every stage that an agent can reason about:
+
+- **Segments JSON** — the agent knows what every section of the video is about, its mood, keywords, and visual description
+- **EDL JSON** — the agent knows exactly which footage file is used where, trim points, durations, and transitions
+- **Alignment JSON** — the agent knows the exact timing of every word in the narration
+- **Captions SRT** — the agent can read and modify subtitle cues
+- **Credits** — the agent knows which Pexels clips are used and can attribute them
+- **Footage metadata** — the agent knows clip durations, orientations, and sources
+
+This isn't a black-box video file — it's a fully decomposed, inspectable, modifiable project. An agent with access to this data and the ability to call FFmpeg, Pexels, and ElevenLabs can make surgical edits conversationally.
+
+### What the Agent Could Do
+
+| Capability | How |
+|---|---|
+| **Generate a video from a topic** | Research + script generation + full pipeline execution |
+| **Edit an existing video** | Modify the EDL, re-render specific clips, swap footage, adjust timing |
+| **Preview changes** | Re-render only the affected section, show before/after |
+| **Adjust narration** | Re-generate specific TTS chunks, adjust voice settings per section |
+| **Manage captions** | Edit SRT cues, reposition, restyle |
+| **Generate metadata** | Titles, descriptions, timestamps, thumbnail prompts — all from project data |
+| **Publish** | Schedule uploads to YouTube, TikTok, Instagram via their APIs |
+| **Multi-project awareness** | "Use the same narrator voice as last week's video" |
+
+### Architecture Implications
+
+The current Python pipeline would remain as the **backend engine** — it already handles FFmpeg, Pexels, ElevenLabs, and LLM calls well. What changes is what sits on top of it:
+
+```
+Current architecture:
+  User -> Cursor/Terminal -> CLI flags -> Python pipeline -> Output
+
+Agentic editor architecture:
+  User -> Conversational UI -> Agent orchestrator -> Python pipeline -> Output
+              |                      |
+              |                      +-- Project state (JSON data)
+              |                      +-- Tool registry (FFmpeg, APIs, publish)
+              |                      +-- Memory (cross-project, user preferences)
+              +-- Real-time preview
+              +-- Timeline visualization
+              +-- Export/publish controls
+```
+
+**Technology choices for the application layer:**
+
+- **TypeScript** for the agent orchestrator, UI, and real-time features. This is where frameworks like OpenClaw and ElizaOS chose TypeScript — conversational interfaces, WebSocket communication, event-driven architecture, and browser-based UI are all TypeScript's strength.
+- **Electron or Tauri** for a cross-platform desktop app (or a web app for browser-based access).
+- **React** for the timeline/canvas visualization and conversational interface.
+- **Python backend** stays as-is — exposed as a local API service that the TypeScript agent layer calls into.
+
+### User-Uploaded Footage: Video Understanding Pipeline
+
+A key capability for the agentic editor is letting users bring their own footage — not just Pexels stock clips. The challenge: Pexels footage comes with metadata (tags, descriptions, durations) that our pipeline already uses. User-uploaded footage is a black box. We need an **ingestion layer** that extracts rich contextual data so the agent can reason about user footage the same way it reasons about Pexels clips.
+
+**The two knowledge gaps to fill:**
+
+**Audio context (what is being said / heard):**
+- **Whisper** (OpenAI, open-source) — runs locally, free, produces timestamped word-level transcriptions. Available via `openai-whisper` Python package or `whisper.cpp` for speed. This handles dialogue, narration, and any spoken content.
+- **Audio classification** — FFmpeg `silencedetect` for gaps, `librosa` for music vs. speech vs. effects detection. Knowing *when* things are said vs. silent vs. scored with music is valuable editing context.
+
+**Visual context (what is being shown):**
+- **Scene detection** — `PySceneDetect` or FFmpeg's `select='gt(scene,0.3)'` filter splits video into distinct scenes at cut points, giving natural segment boundaries.
+- **Frame extraction** — FFmpeg pulls 1-2 keyframes per detected scene. Cheap and fast.
+- **Multimodal LLM** — send extracted keyframes to a vision-capable model (GPT-4V, Claude Vision, Gemini) to describe what's happening: characters, actions, settings, emotions, art style ("anime fight scene on a rooftop at sunset"), etc. This is the richest source of visual understanding.
+- **OCR** — Tesseract (free, local) for any on-screen text: subtitles, signs, UI elements, title cards.
+
+**Deep context (what it actually IS, not just what it looks like):**
+
+Basic visual description tells you *what something looks like*. Deep context tells you *what it is*. "Black and white footage of an airship on fire" vs. "The Hindenburg disaster, May 6, 1937, Lakehurst, New Jersey — killed 36 people, ended the era of commercial airship travel." An agent editing a documentary needs the second kind of knowledge.
+
+This is achieved through a **multi-pass enrichment approach:**
+
+1. **Recognition-first prompting** — The multimodal LLM is prompted not just to describe, but to *identify*: "What specific historical event, public figure, cultural work, or real-world context do you recognize? If this is from a known film, anime, documentary, or event, name it. Be precise — what IS this, not just what it looks like." Modern vision models have deep world knowledge and can recognize famous events, landmarks, public figures, anime/film scenes, etc.
+
+2. **Transcript-informed visual enrichment** — The audio track often names what the video shows. A second LLM pass combines the transcript AND the visual descriptions: "The narrator says 'the 1937 disaster that changed aviation forever' and the frame shows an airship on fire — identify the specific event and provide full context." The transcript gives the LLM the hint it needs to go from vague to specific.
+
+3. **Web search augmentation** — For anything the LLM is uncertain about, an automated web search fills the gap. The LLM describes a frame as "1960s protest march, Washington DC" → auto-search "1960s protest march Washington DC" → March on Washington, August 28, 1963, MLK's "I Have a Dream" speech. This is the same deep-research loop we already use for script writing, applied to video understanding.
+
+This distinction matters because it determines whether the agent can *intelligently* use footage. Without deep context, the agent can only match by visual similarity ("find me footage of fire"). With it, the agent understands meaning ("find me footage of a pivotal historical disaster for the section about things that changed the world overnight").
+
+**The ingestion pipeline (3-pass):**
+
+```
+User uploads video to media_library/
+       |
+       v
+  PASS 1: Extraction
+  Scene Detection (PySceneDetect / FFmpeg) -> scene boundaries
+  Frame Extraction (FFmpeg) -> 1-2 keyframes per scene
+  Audio Transcription (Whisper, local/free) -> timestamped transcript
+  OCR (Tesseract) -> on-screen text
+       |
+       v
+  PASS 2: Recognition + Description
+  Multimodal LLM receives keyframes + transcript together
+  Prompted for identification, not just description:
+    - What specific event/person/place/work is this?
+    - Historical significance, dates, key figures
+    - Cultural context (film, anime, documentary, news footage)
+    - Emotional tone and mood
+       |
+       v
+  PASS 3: Deep Enrichment (when needed)
+  For low-confidence identifications or unknown content:
+    - Web search augmentation (visual clues + transcript -> search -> context)
+    - Cross-reference with transcript ("narrator mentions X, frame shows Y")
+    - Fill in dates, significance, related events
+       |
+       v
+  Cached metadata JSON per file
+  Agent has full searchable knowledge of the footage
+```
+
+**Output format** — rich metadata with both surface description and deep context:
+
+```json
+{
+  "scenes": [
+    {
+      "scene_id": 1,
+      "start_time": 0.0,
+      "end_time": 4.2,
+      "visual_description": "Black and white footage of a large airship engulfed in flames, people running on the ground",
+      "identification": {
+        "event": "Hindenburg disaster",
+        "date": "May 6, 1937",
+        "location": "Lakehurst Naval Air Station, New Jersey",
+        "significance": "Killed 36 people, ended commercial airship era, first major disaster broadcast live on radio",
+        "key_figures": ["Herbert Morrison (radio reporter)"],
+        "source_type": "historical_footage",
+        "confidence": "high"
+      },
+      "mood": "catastrophic, historic",
+      "transcript": "Oh, the humanity!",
+      "transcript_start": 0.5,
+      "transcript_end": 1.8,
+      "on_screen_text": null,
+      "source_file": "media_library/hindenburg_footage.mp4"
+    }
+  ]
+}
+```
+
+Compared to Pexels metadata (which gives us tags like `["airship", "fire", "disaster"]`), this is orders of magnitude richer. The agent doesn't just know what the footage looks like — it knows what it *means*, when it happened, why it matters, and how it connects to other concepts. This enables intelligent editing decisions that a tag-based system never could.
+
+Once ingested, user footage becomes first-class data — the agent can search it by content, context, historical period, or meaning ("find me footage from the 1930s about technological failure"), use it in the EDL, trim it precisely, and reference it in editing conversations. The metadata is cached after the first analysis, so the library grows over time without repeated processing.
+
+**Key tools (all free or open-source):**
+- Whisper (speech-to-text, local)
+- PySceneDetect (scene boundary detection)
+- FFmpeg (frame extraction, audio analysis)
+- Tesseract (OCR)
+- Multimodal LLM (visual recognition + deep context — uses existing LLM infrastructure if the provider supports vision)
+- Web search API (enrichment pass — for context the LLM can't identify from the frame alone)
+
+### Competitive Landscape
+
+This would position script2vid differently from existing tools:
+
+- **CapCut / Premiere / DaVinci** — powerful but require learning complex UIs. Not conversational.
+- **Descript** — closest existing product (transcript-based editing), but not fully agentic. Still UI-driven.
+- **Runway / Pika** — AI video generation, but focused on generating footage, not assembling/editing complete videos from scripts.
+- **script2vid as agentic editor** — conversation-first, knows the full project structure, can generate AND edit AND publish. Understands both stock footage and user-uploaded content through structured metadata. The user never needs to learn a UI.
+
+### Development Phases
+
+1. **Phase 1 (current):** CLI pipeline with rich structured data. All the building blocks exist.
+2. **Phase 2:** Expose the pipeline as a local API service (Python FastAPI or similar). Add endpoints for each operation: generate, edit segment, swap footage, re-render section, etc.
+3. **Phase 3:** Build the video understanding / ingestion layer for user-uploaded footage (Whisper + scene detection + multimodal LLM). Users can bring their own clips and the system understands them.
+4. **Phase 4:** Build the TypeScript agent layer. Conversational interface, tool registry, project state management. The agent can call pipeline API endpoints as tools.
+5. **Phase 5:** Add the visual layer. Timeline preview, real-time rendering feedback, canvas for thumbnail editing.
+6. **Phase 6:** Publishing integrations. YouTube, TikTok, Instagram scheduling and upload via their APIs.
