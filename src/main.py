@@ -24,6 +24,7 @@ from src.text_overlay import generate_overlays_for_segments
 from src.captions import generate_srt
 from src.timeline_builder import build_timeline
 from src.video_assembler import assemble_video
+from src.publisher import upload_to_youtube
 
 
 def _generate_credits(segments: list[dict], credits_dir: Path) -> Path | None:
@@ -363,6 +364,47 @@ def main():
         action="store_true",
         help="Render in vertical format (1080x1920) for TikTok/Reels/YouTube Shorts.",
     )
+    parser.add_argument(
+        "--publish",
+        action="store_true",
+        help="Upload the rendered video to YouTube after pipeline completes.",
+    )
+    parser.add_argument(
+        "--schedule",
+        type=str,
+        default=None,
+        help="Schedule YouTube publish time (ISO 8601, e.g. '2026-02-16T14:00:00Z'). Implies --publish.",
+    )
+    parser.add_argument(
+        "--title",
+        type=str,
+        default=None,
+        help="YouTube video title. If not provided, uses the project name.",
+    )
+    parser.add_argument(
+        "--description",
+        type=str,
+        default="",
+        help="YouTube video description.",
+    )
+    parser.add_argument(
+        "--tags",
+        type=str,
+        default=None,
+        help="Comma-separated YouTube tags (e.g. 'Finance,Money,Shorts').",
+    )
+    parser.add_argument(
+        "--category",
+        type=str,
+        default="people",
+        help="YouTube category (e.g. 'people', 'education', 'entertainment'). Default: 'people'.",
+    )
+    parser.add_argument(
+        "--privacy",
+        choices=["public", "private", "unlisted"],
+        default="private",
+        help="YouTube privacy status. Default: 'private'. Must be 'private' for scheduled publishing.",
+    )
     args = parser.parse_args()
 
     if args.script:
@@ -391,13 +433,44 @@ def main():
         _cfg.OUTPUT_HEIGHT = 1920
         print("[Config] Vertical mode: 1080x1920 (9:16)")
 
+    # --schedule implies --publish
+    if args.schedule:
+        args.publish = True
+
     project_name = _derive_project_name(script_file, script_text)
-    run_pipeline(
+    output_path = run_pipeline(
         script_text, project_name,
         fresh=args.fresh, quality=args.quality,
         overlays=args.overlays, captions=args.captions,
         vertical=args.vertical,
     )
+
+    # ── YouTube Publishing (opt-in) ──
+    if args.publish:
+        print("\n" + "=" * 60)
+        print("STAGE 6: YouTube Publishing")
+        print("=" * 60)
+        yt_title = args.title or project_name.replace("_", " ").title()
+        yt_tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
+        try:
+            result = upload_to_youtube(
+                video_path=output_path,
+                title=yt_title,
+                description=args.description,
+                tags=yt_tags,
+                category=args.category,
+                privacy=args.privacy,
+                publish_at=args.schedule,
+                is_short=args.vertical,
+                contains_synthetic_media=False,
+            )
+        except FileNotFoundError as e:
+            print(f"\n{e}")
+            print("Skipping YouTube upload. Video was still rendered successfully.")
+        except Exception as e:
+            print(f"\n[YouTube] Upload failed: {e}")
+            print("Video was still rendered successfully at:")
+            print(f"  {output_path}")
 
 
 if __name__ == "__main__":

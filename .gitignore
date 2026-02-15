@@ -1,5 +1,10 @@
-# API keys
+# API keys and OAuth credentials
 .env
+client_secrets.json
+youtube_token.json
+
+# App icons (generated assets)
+IconKitchenScript2vid/
 
 # Working files (clips, audio, rendered videos)
 workspace/
