@@ -31,6 +31,9 @@ The pipeline is **fully built, tested, and production-ready** for both short-for
 - **Release Calendar** — Built-in scheduling system for managing video releases across multiple channels. Channels define cadence (days + time + timezone), default category/tags. Placeholder slots are auto-generated weeks ahead. Videos are auto-assigned to the next open slot. CLI (`python -m src.publishing.calendar_manager`) and web GUI (`/calendar`). Slot statuses: placeholder → assigned → uploaded → published.
 - **Channel-Based Workspaces** — Each channel gets its own directory under `channels/<id>/` with a `default_settings.json` for pipeline defaults (vertical, captions, quality, publish, category, tags, privacy) and a `workspace/` subdirectory for video projects. The `--channel` flag is the single switch: loads defaults, routes workspace, renders, assigns to calendar, uploads to YouTube.
 - **Web UI** — Browser-based interface at `http://localhost:5555`. Pipeline view (`/`): select channel, drag-and-drop script, enter title/description, toggle overrides, start pipeline with real-time progress. Calendar view (`/calendar`): interactive monthly calendar with per-channel tabs. Threaded server handles concurrent requests.
+- **Per-Channel OAuth Tokens** — Each channel stores its own `youtube_token.json` at `channels/<id>/youtube_token.json`, enabling uploads to different YouTube accounts from the same machine. On first publish for a channel, the browser auth flow opens with a hint telling the user which YouTube channel to select. Token is reused and auto-refreshed for future uploads.
+- **Content Prompt System** — Each channel has a `content_prompt.md` file — a standardized LLM prompt template that defines the channel's creative voice, tone, structure, title/description format, and includes 2-3 example scripts. Designed to be copy-pasted into any LLM (or used programmatically) to generate on-brand scripts, titles, and descriptions. Standardized sections: Channel Identity, Content Format, Voice & Tone (with Do/Don't), Script Structure, Title Guidelines, Description Guidelines, Examples. Lives in the gitignored `channels/` directory (it's proprietary to the user's channel).
+- **Multi-Time Calendar** — The release calendar supports multiple daily release times per channel (e.g., 12:00 PM and 8:00 PM). Times are stored as a comma-separated list in the channel's cadence config. Slot generation creates a placeholder for each time on each scheduled day.
 
 ### What's Been Tested
 
@@ -203,9 +206,9 @@ These features close the gap between "pipeline produces a video" and "video is r
 
 | Feature | Description |
 |---|---|
-| **Script generation from topic** | Given a topic (e.g. "the Bitcoin crash of February 2026"), use deep research + LLM to generate a complete 20+ minute video script. Currently scripts are written manually or with external AI assistance before being fed to the pipeline. Integrating this step would make the workflow truly end-to-end: topic in, publish-ready video out. |
-| **Video title generation** | Auto-generate a CTR-optimized YouTube title based on the script content. The LLM already understands the full script — generating a compelling title is a natural extension. Output saved to the workspace folder alongside the video. |
-| **Video description generation** | Auto-generate a YouTube description including a summary, auto-generated timestamps (derived from segment timing data we already have), and Pexels attribution (from the credits.txt we already generate). Currently descriptions are written manually. |
+| **Script generation from topic** | Given a topic (e.g. "the Bitcoin crash of February 2026"), use deep research + LLM to generate a complete 20+ minute video script. Currently scripts are written manually or with external AI assistance before being fed to the pipeline. Integrating this step would make the workflow truly end-to-end: topic in, publish-ready video out. **Partial:** Each channel now has a `content_prompt.md` that defines the creative voice and can be used with any external LLM to generate on-brand scripts. The next step is integrating this into the pipeline itself so it's fully automated. |
+| **Video title generation** | Auto-generate a CTR-optimized YouTube title based on the script content. **Partial:** The `content_prompt.md` system includes title guidelines and examples. Integration into the pipeline (reading the prompt + calling an LLM) is the remaining step. |
+| **Video description generation** | Auto-generate a YouTube description including a summary, auto-generated timestamps (derived from segment timing data we already have), and Pexels attribution (from the credits.txt we already generate). **Partial:** The `content_prompt.md` system includes description guidelines and hashtag conventions. Integration into the pipeline is the remaining step. |
 | **Thumbnail prompt generation** | Auto-generate a Midjourney (or similar) prompt for creating a custom thumbnail image based on the script's topic, tone, and key visuals. The pipeline already knows the visual descriptions and mood of every segment — distilling that into a thumbnail prompt is straightforward. |
 
 ### Medium Priority — Video Quality & Features
@@ -413,9 +416,10 @@ This would position script2vid differently from existing tools:
 
 ### Development Phases
 
-1. **Phase 1 (current):** CLI pipeline with rich structured data. All the building blocks exist.
-2. **Phase 2:** Expose the pipeline as a local API service (Python FastAPI or similar). Add endpoints for each operation: generate, edit segment, swap footage, re-render section, etc.
-3. **Phase 3:** Build the video understanding / ingestion layer for user-uploaded footage (Whisper + scene detection + multimodal LLM). Users can bring their own clips and the system understands them.
-4. **Phase 4:** Build the TypeScript agent layer. Conversational interface, tool registry, project state management. The agent can call pipeline API endpoints as tools.
-5. **Phase 5:** Add the visual layer. Timeline preview, real-time rendering feedback, canvas for thumbnail editing.
-6. **Phase 6:** Publishing integrations. YouTube, TikTok, Instagram scheduling and upload via their APIs.
+1. **Phase 1 (COMPLETE):** CLI pipeline with rich structured data. All the building blocks exist. YouTube publishing, release calendar, per-channel OAuth, channel workspaces, web UI (pipeline + calendar), and content prompt system are all built and tested.
+2. **Phase 1.5 (next):** Integrate content generation into the pipeline. Read `content_prompt.md` + call an LLM to auto-generate scripts, titles, and descriptions. The prompt templates exist; the remaining step is wiring them into the pipeline so users can go from topic → published video with a single command.
+3. **Phase 2:** Expose the pipeline as a local API service (Python FastAPI or similar). Add endpoints for each operation: generate, edit segment, swap footage, re-render section, etc.
+4. **Phase 3:** Build the video understanding / ingestion layer for user-uploaded footage (Whisper + scene detection + multimodal LLM). Users can bring their own clips and the system understands them.
+5. **Phase 4:** Build the TypeScript agent layer. Conversational interface, tool registry, project state management. The agent can call pipeline API endpoints as tools.
+6. **Phase 5:** Add the visual layer. Timeline preview, real-time rendering feedback, canvas for thumbnail editing.
+7. **Phase 6:** Publishing integrations beyond YouTube. TikTok, Instagram scheduling and upload via their APIs.

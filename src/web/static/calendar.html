@@ -639,7 +639,7 @@ function renderChannelInfo() {
   slots.forEach(s => counts[s.status] = (counts[s.status] || 0) + 1);
 
   el.innerHTML = `
-    <div class="channel-info-item"><strong>${days}</strong> at ${cad.time || '?'} ${cad.timezone || ''}</div>
+    <div class="channel-info-item"><strong>${days}</strong> at ${(cad.times || [cad.time || '?']).join(' & ')} ${cad.timezone || ''}</div>
     <div class="channel-info-item">${cat}</div>
     <div class="channel-info-item" style="margin-left:auto;">
       <span style="color:#475569">${counts.placeholder} empty</span> &middot;

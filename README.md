@@ -77,26 +77,35 @@ To enable automated YouTube uploads and scheduled publishing:
 2. Enable the **YouTube Data API v3**
 3. Create **OAuth 2.0 Desktop App** credentials
 4. Download as `client_secrets.json` and place it in the project root
-5. On first upload, a browser window will open for authorization. The resulting token is saved to `youtube_token.json`
+5. On first upload for each channel, a browser window opens for authorization — **select the correct YouTube channel when prompted**
+6. The token is saved per-channel at `channels/<id>/youtube_token.json` so each channel can authenticate to a different YouTube account
+7. All channels share the same `client_secrets.json` (your Google Cloud OAuth app), but each stores its own token
 
 ### 4. (Optional) Channel setup
 
 To use the `--channel` flag for one-step scheduled publishing, set up your channels:
 
 ```bash
-# Add a channel to the calendar
+# Add a channel to the calendar (supports multiple daily times, comma-separated)
 python -m src.publishing.calendar_manager add-channel \
   --id deep_thoughts \
   --name "Deep Thoughts For Zen" \
-  --days mon wed fri \
-  --time 14:00 \
+  --days mon,tue,wed,thu,fri,sat,sun \
+  --time "12:00,20:00" \
   --timezone America/New_York
 
 # Generate placeholder slots
 python -m src.publishing.calendar_manager generate --weeks 4
 ```
 
-Each channel can have its own default pipeline settings. See `channels_example/` for setup instructions.
+Each channel has its own directory under `channels/<id>/` containing:
+
+- **`default_settings.json`** — pipeline and publishing defaults (vertical, captions, quality, publish, category, tags, privacy, etc.)
+- **`content_prompt.md`** — LLM prompt template for generating scripts, titles, and descriptions consistent with the channel's voice and style. This is the channel's "character sheet" — designed to be sent to any LLM to produce on-brand content. Standardized sections: Channel Identity, Content Format, Voice & Tone, Script Structure, Title/Description Guidelines, and Examples.
+- **`youtube_token.json`** — per-channel OAuth token (auto-created on first publish)
+- **`workspace/`** — per-video project folders (auto-created by the pipeline)
+
+See `channels_example/` for setup instructions and templates.
 
 ## Usage
 
@@ -186,9 +195,13 @@ A built-in calendar system for scheduling and tracking video releases across mul
 # View current schedule
 python -m src.publishing.calendar_manager status
 
-# Add a channel
+# Add a channel (single time)
 python -m src.publishing.calendar_manager add-channel \
-  --id business --name "Business Channel" --days tue thu --time 11:00
+  --id business --name "Business Channel" --days tue,thu --time 11:00
+
+# Add a channel (multiple daily times)
+python -m src.publishing.calendar_manager add-channel \
+  --id deep_thoughts --name "Deep Thoughts" --days mon,tue,wed,thu,fri,sat,sun --time "12:00,20:00"
 
 # Generate 4 weeks of placeholder slots
 python -m src.publishing.calendar_manager generate --weeks 4
@@ -226,13 +239,16 @@ Each script gets its own folder in the workspace:
 ```
 channels/
 └── deep_thoughts/
-    ├── default_settings.json       # Channel pipeline defaults
+    ├── default_settings.json       # Channel pipeline + publishing defaults
+    ├── content_prompt.md           # LLM prompt for scripts/titles/descriptions
+    ├── youtube_token.json          # Per-channel OAuth token (auto-created)
     └── workspace/
         └── short_01/
             ├── clips/              # Downloaded stock footage
             ├── audio/
             │   └── narration.mp3   # Generated voiceover (mastered)
             ├── overlays/           # Text overlay PNGs (when --overlays used)
+            ├── thumbnails/         # Thumbnail images (future use)
             ├── credits/
             │   └── credits.txt     # Pexels videographer attribution
             ├── output/
@@ -281,8 +297,8 @@ src/
     └── rate_limiter.py            # Sliding-window API rate limiter
 
 scripts/                           # Your .txt video scripts
-channels/                          # Per-channel workspaces + settings (gitignored)
-channels_example/                  # Template for setting up new channels
+channels/                          # Per-channel workspaces, settings, prompts, tokens (gitignored)
+channels_example/                  # Template for setting up new channels (includes content_prompt.md template)
 docs/                              # Development roadmap and planning notes
 ```
 

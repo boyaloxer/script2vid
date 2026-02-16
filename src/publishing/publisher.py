@@ -12,8 +12,19 @@ First-time setup:
        After approving, a youtube_token.json is saved so you won't need
        to re-authorize again (unless the token expires/is revoked).
 
+Token storage:
+    When using --channel, the token is stored per-channel:
+        channels/<channel_id>/youtube_token.json
+
+    This allows uploading to different YouTube accounts for different channels.
+    On first upload for each channel, the browser auth flow opens and you sign
+    into the correct Google/YouTube account.
+
+    A fallback token at the project root (youtube_token.json) is used when no
+    channel-specific token exists.
+
 Usage:
-    from src.publisher import upload_to_youtube
+    from src.publishing.publisher import upload_to_youtube
 
     upload_to_youtube(
         video_path="workspace/my_video/output/my_video.mp4",
@@ -42,7 +53,28 @@ _SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
 # Default locations for credentials
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _CLIENT_SECRETS = _PROJECT_ROOT / "client_secrets.json"
-_TOKEN_FILE = _PROJECT_ROOT / "youtube_token.json"
+_TOKEN_FILE = _PROJECT_ROOT / "youtube_token.json"  # fallback
+_CHANNELS_DIR = _PROJECT_ROOT / "channels"
+
+
+def _resolve_token_path(channel_id: str | None = None) -> Path:
+    """
+    Resolve the youtube_token.json path for a given channel.
+
+    Priority:
+      1. channels/<channel_id>/youtube_token.json  (if channel_id given)
+      2. youtube_token.json in project root         (fallback)
+    """
+    if channel_id:
+        channel_token = _CHANNELS_DIR / channel_id / "youtube_token.json"
+        # If the channel token already exists, use it
+        if channel_token.exists():
+            return channel_token
+        # If the channel dir exists (i.e. it's a real channel), use that path
+        # so new tokens get saved per-channel
+        if (_CHANNELS_DIR / channel_id).is_dir():
+            return channel_token
+    return _TOKEN_FILE
 
 # YouTube API category IDs (common ones)
 CATEGORIES = {
@@ -66,12 +98,17 @@ CATEGORIES = {
 def _authenticate(
     client_secrets: Path | str | None = None,
     token_file: Path | str | None = None,
+    channel_hint: str | None = None,
 ) -> Credentials:
     """
     Authenticate with YouTube via OAuth2.
 
     On first run, opens a browser for user authorization.
     Subsequent runs use the cached token.
+
+    Args:
+        channel_hint: Friendly channel name shown to the user so they know
+            which YouTube channel to select in the browser picker.
     """
     client_secrets = Path(client_secrets or _CLIENT_SECRETS)
     token_file = Path(token_file or _TOKEN_FILE)
@@ -102,6 +139,8 @@ def _authenticate(
                 f"     {client_secrets}\n"
             )
         print("[YouTube] Opening browser for authorization...")
+        if channel_hint:
+            print(f'[YouTube] >>> Select the "{channel_hint}" channel when prompted <<<')
         print("[YouTube] (First time only — token will be saved for future use)")
         flow = InstalledAppFlow.from_client_secrets_file(
             str(client_secrets), _SCOPES
@@ -130,6 +169,7 @@ def upload_to_youtube(
     public_stats_viewable: bool = True,
     client_secrets: Path | str | None = None,
     token_file: Path | str | None = None,
+    channel_id: str | None = None,
 ) -> dict:
     """
     Upload a video to YouTube with optional scheduled publishing.
@@ -158,7 +198,10 @@ def upload_to_youtube(
         public_stats_viewable: Whether like/view counts are publicly visible.
             Default: True.
         client_secrets: Path to OAuth client_secrets.json (default: project root).
-        token_file: Path to cached token file (default: project root).
+        token_file: Path to cached token file (default: auto-resolved per channel).
+        channel_id: script2vid channel ID (e.g. "business"). When provided, the
+            token is stored/loaded from channels/<id>/youtube_token.json so each
+            channel can authenticate with a different YouTube account.
 
     Returns:
         Dict with upload result: {"video_id": "...", "url": "...", "status": "..."}.
@@ -185,8 +228,22 @@ def upload_to_youtube(
         print(f"[YouTube] Warning: Title truncated to 100 chars (was {len(title)})")
         title = title[:97] + "..."
 
-    # Authenticate
-    creds = _authenticate(client_secrets, token_file)
+    # Authenticate — resolve per-channel token if no explicit path given
+    channel_hint = None
+    if not token_file:
+        token_file = _resolve_token_path(channel_id)
+        if channel_id:
+            print(f"[YouTube] Using token for channel: {channel_id}")
+            print(f"[YouTube] Token path: {token_file}")
+            # Look up the friendly channel name for the auth prompt
+            try:
+                from src.publishing.calendar_manager import load_calendar
+                cal = load_calendar()
+                ch_cfg = cal.get("channels", {}).get(channel_id, {})
+                channel_hint = ch_cfg.get("name")
+            except Exception:
+                channel_hint = channel_id  # fall back to the slug
+    creds = _authenticate(client_secrets, token_file, channel_hint=channel_hint)
     youtube = build("youtube", "v3", credentials=creds)
 
     # Build request body
@@ -270,6 +327,7 @@ def publish_workspace_video(
     publish_at: str | None = None,
     is_short: bool = False,
     version: str | None = None,
+    channel_id: str | None = None,
 ) -> dict:
     """
     Convenience function to publish the latest video from a workspace folder.
@@ -316,4 +374,5 @@ def publish_workspace_video(
         privacy=privacy,
         publish_at=publish_at,
         is_short=is_short,
+        channel_id=channel_id,
     )

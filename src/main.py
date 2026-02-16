@@ -578,6 +578,7 @@ def main():
                         publish_at=slot["scheduled_time"],
                         is_short=args.vertical,
                         contains_synthetic_media=False,
+                        channel_id=args.channel,
                     )
 
                     # Update calendar to "uploaded"
@@ -618,6 +619,7 @@ def main():
                 publish_at=args.schedule,
                 is_short=args.vertical,
                 contains_synthetic_media=False,
+                channel_id=args.channel,
             )
         except FileNotFoundError as e:
             print(f"\n{e}")

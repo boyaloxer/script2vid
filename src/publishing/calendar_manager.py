@@ -130,11 +130,14 @@ def add_channel(
     existing = cal["channels"].get(channel_id)
     colour = existing["colour"] if existing and "colour" in existing else CHANNEL_COLOURS[idx]
 
+    # Support multiple times per day (comma-separated or single value)
+    times = [t.strip() for t in time_str.split(",")]
+
     cal["channels"][channel_id] = {
         "name": name,
         "cadence": {
             "days": normalised,
-            "time": time_str,
+            "times": times,
             "timezone": timezone,
         },
         "default_category": category,
@@ -142,8 +145,9 @@ def add_channel(
         "colour": colour,
     }
     save_calendar(cal)
+    times_str = " & ".join(times)
     print(f"[Calendar] Channel '{name}' ({channel_id}) saved.")
-    print(f"  Schedule : {', '.join(normalised)} at {time_str} {timezone}")
+    print(f"  Schedule : {', '.join(normalised)} at {times_str} {timezone}")
     return cal["channels"][channel_id]
 
 
@@ -199,7 +203,9 @@ def generate_slots(channel_id: str | None = None, weeks: int = 4) -> list[dict]:
     for ch_id, ch in targets.items():
         cadence = ch["cadence"]
         tz = ZoneInfo(cadence["timezone"])
-        hour, minute = map(int, cadence["time"].split(":"))
+        # Support both legacy "time" (single string) and new "times" (list)
+        raw_times = cadence.get("times") or [cadence.get("time", "12:00")]
+        time_pairs = [tuple(map(int, t.split(":"))) for t in raw_times]
         target_weekdays = [DAY_NUMBERS[d] for d in cadence["days"]]
 
         cursor = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -207,31 +213,31 @@ def generate_slots(channel_id: str | None = None, weeks: int = 4) -> list[dict]:
 
         while cursor <= end:
             if cursor.weekday() in target_weekdays:
-                slot_dt = cursor.replace(hour=hour, minute=minute)
-                slot_aware = slot_dt.replace(tzinfo=tz)
+                for hour, minute in time_pairs:
+                    slot_dt = cursor.replace(hour=hour, minute=minute)
+                    slot_aware = slot_dt.replace(tzinfo=tz)
 
-                # Skip past slots
-                if slot_aware <= datetime.now(tz):
-                    cursor += timedelta(days=1)
-                    continue
+                    # Skip past slots
+                    if slot_aware <= datetime.now(tz):
+                        continue
 
-                iso = slot_aware.isoformat()
-                if (ch_id, iso) not in existing:
-                    new_slots.append({
-                        "id": uuid.uuid4().hex[:8],
-                        "channel_id": ch_id,
-                        "scheduled_time": iso,
-                        "status": "placeholder",
-                        "video_path": None,
-                        "title": None,
-                        "description": None,
-                        "tags": None,
-                        "workspace": None,
-                        "is_vertical": False,
-                        "youtube_video_id": None,
-                        "youtube_url": None,
-                    })
-                    existing.add((ch_id, iso))
+                    iso = slot_aware.isoformat()
+                    if (ch_id, iso) not in existing:
+                        new_slots.append({
+                            "id": uuid.uuid4().hex[:8],
+                            "channel_id": ch_id,
+                            "scheduled_time": iso,
+                            "status": "placeholder",
+                            "video_path": None,
+                            "title": None,
+                            "description": None,
+                            "tags": None,
+                            "workspace": None,
+                            "is_vertical": False,
+                            "youtube_video_id": None,
+                            "youtube_url": None,
+                        })
+                        existing.add((ch_id, iso))
 
             cursor += timedelta(days=1)
 
@@ -394,6 +400,7 @@ def publish_due(hours_ahead: int = 48) -> list[dict]:
                 privacy="private",
                 publish_at=slot["scheduled_time"],
                 is_short=slot.get("is_vertical", False),
+                channel_id=slot["channel_id"],
             )
             # Mark uploaded
             update_slot(slot["id"],
@@ -453,7 +460,9 @@ def print_status(channel_id: str | None = None) -> None:
         cad = ch["cadence"]
         days_str = ", ".join(d[:3].title() for d in cad["days"])
         print(f"  * {ch['name']} ({ch_id})")
-        print(f"    {days_str} at {cad['time']} {cad['timezone']}")
+        times = cad.get("times") or [cad.get("time", "12:00")]
+        times_str = " & ".join(times)
+        print(f"    {days_str} at {times_str} {cad['timezone']}")
 
     # Upcoming slots
     upcoming = get_upcoming(channel_id, limit=20)
