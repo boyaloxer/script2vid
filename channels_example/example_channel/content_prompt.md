@@ -67,7 +67,7 @@ talks about?"]
 
 ## Title Guidelines
 
-- **Length:** [e.g., 5-9 words]
+- **Length:** [e.g., 4-6 words ideal — shorter titles reduce cognitive load and drive curiosity]
 - **Style:** [e.g., "Declarative, sounds like a realization"]
 - **Capitalization:** [Title Case / Sentence case / lowercase]
 - **Goal:** [What should the title make the viewer do/feel]

@@ -8,6 +8,7 @@ Includes a sliding-window rate limiter to stay within Pexels' 200 req/hour
 limit on long-form videos (80–150+ segments).
 """
 
+import time
 from pathlib import Path
 import requests
 
@@ -59,16 +60,25 @@ def search_videos(query: str, per_page: int = 15, orientation: str | None = None
         "orientation": orientation,
         "size": "large",  # prefer HD/4K sources
     }
-    resp = requests.get(
-        f"{PEXELS_BASE_URL}/search",
-        headers=_pexels_headers(),
-        params=params,
-        timeout=30,
-    )
-    resp.raise_for_status()
+    max_retries = 5
+    for attempt in range(max_retries):
+        resp = requests.get(
+            f"{PEXELS_BASE_URL}/search",
+            headers=_pexels_headers(),
+            params=params,
+            timeout=30,
+        )
+        if resp.status_code == 429:
+            wait = 30 * (attempt + 1)
+            print(f"[Footage Finder]   Rate limited — waiting {wait}s before retry...")
+            time.sleep(wait)
+            continue
+        resp.raise_for_status()
+        _pexels_limiter.record()
+        return resp.json().get("videos", [])
 
-    _pexels_limiter.record()
-    return resp.json().get("videos", [])
+    resp.raise_for_status()
+    return []
 
 
 def _pick_best_file(video: dict, min_height: int = 720) -> dict | None:
@@ -147,10 +157,32 @@ def find_footage_for_segments(
         used_video_ids = set()
 
     for seg in segments:
+        seg_id = seg["segment_id"]
+
+        # Check if a clip already exists on disk for this segment
+        existing = list(clips_dir.glob(f"seg{seg_id}_*.mp4"))
+        if existing:
+            clip = existing[0]
+            # Extract Pexels video ID from filename: seg{id}_{pexels_id}.mp4
+            try:
+                pexels_id = int(clip.stem.split("_", 1)[1])
+            except (ValueError, IndexError):
+                pexels_id = None
+            print(f"[Footage Finder] Segment {seg_id}: using cached clip {clip.name}")
+            seg["footage_path"] = str(clip)
+            seg["footage_duration"] = seg.get("footage_duration", 10)
+            seg["pexels_video_id"] = pexels_id
+            seg["pexels_video_url"] = seg.get("pexels_video_url", "")
+            seg["pexels_videographer"] = seg.get("pexels_videographer", "Unknown")
+            seg["pexels_videographer_url"] = seg.get("pexels_videographer_url", "")
+            if pexels_id:
+                used_video_ids.add(pexels_id)
+            continue
+
         keywords = seg["search_keywords"]
         query = " ".join(keywords[:2])  # combine top 2 keyword phrases
 
-        print(f"[Footage Finder] Segment {seg['segment_id']}: searching \"{query}\"...")
+        print(f"[Footage Finder] Segment {seg_id}: searching \"{query}\"...")
         videos = search_videos(query)
 
         if not videos:
