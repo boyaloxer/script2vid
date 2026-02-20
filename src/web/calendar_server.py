@@ -24,6 +24,7 @@ from urllib.parse import urlparse, parse_qs
 
 from src.publishing import calendar_manager as cm
 from src.web import pipeline_runner as runner
+from src.web import dashboard_api
 
 _PORT = 5555
 _STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -84,6 +85,38 @@ class AppHandler(BaseHTTPRequestHandler):
             self._send_html(_load_html("pipeline.html"))
         elif path == "/calendar":
             self._send_html(_load_html("calendar.html"))
+        elif path == "/dashboard":
+            self._send_html(_load_html("dashboard.html"))
+
+        # ── Dashboard API ─────────────────────────────────────────
+        elif path == "/api/dashboard/overview":
+            ch = qs.get("channel", [None])[0]
+            self._send_json(dashboard_api.get_overview(ch))
+        elif path == "/api/dashboard/memory":
+            ch = qs.get("channel", [None])[0]
+            self._send_json(dashboard_api.get_memory(ch))
+        elif path == "/api/dashboard/experiments":
+            ch = qs.get("channel", [None])[0]
+            self._send_json(dashboard_api.get_experiments(ch))
+        elif path == "/api/dashboard/intelligence":
+            ch = qs.get("channel", [None])[0]
+            self._send_json(dashboard_api.get_intelligence(ch))
+        elif path == "/api/dashboard/sessions":
+            self._send_json(dashboard_api.get_recent_sessions())
+        elif path == "/api/dashboard/dataset":
+            self._send_json(dashboard_api.get_dataset_stats())
+        elif path == "/api/dashboard/optimizations":
+            ch = qs.get("channel", [None])[0]
+            self._send_json(dashboard_api.get_optimizations(ch))
+
+        # ── Live Activity Feed ────────────────────────────────────
+        elif path == "/api/dashboard/activity":
+            since = int(qs.get("since", [0])[0])
+            try:
+                from src.agent.activity_feed import get_since
+                self._send_json(get_since(since))
+            except Exception as e:
+                self._send_json({"seq": 0, "entries": [], "error": str(e)})
 
         # ── Calendar API ──────────────────────────────────────────
         elif path == "/api/calendar":
@@ -247,6 +280,7 @@ def start_server(port: int = _PORT) -> None:
     print(f"[script2vid] Web UI at {url}")
     print(f"[script2vid] Pipeline:  {url}/")
     print(f"[script2vid] Calendar:  {url}/calendar")
+    print(f"[script2vid] Dashboard: {url}/dashboard")
     print("[script2vid] Press Ctrl+C to stop.\n")
     webbrowser.open(url)
     try:

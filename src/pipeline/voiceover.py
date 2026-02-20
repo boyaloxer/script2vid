@@ -67,9 +67,23 @@ def _normalize_audio(audio_path: Path) -> None:
         temp_path.unlink(missing_ok=True)
         return  # keep original audio as fallback
 
-    # Replace original with normalized version
-    temp_path.replace(audio_path)
-    print("[Voiceover] Audio normalized successfully.")
+    # Replace original with normalized version.
+    # On Windows (especially with OneDrive), the original file may still be
+    # locked briefly. Retry with a short backoff before giving up.
+    import time as _time
+    for attempt in range(5):
+        try:
+            audio_path.unlink(missing_ok=True)
+            temp_path.rename(audio_path)
+            print("[Voiceover] Audio normalized successfully.")
+            return
+        except PermissionError:
+            if attempt < 4:
+                _time.sleep(1 * (attempt + 1))
+            else:
+                print("[Voiceover] WARNING: Could not replace original audio (file locked). Using normalized copy.")
+                # Fall back: leave temp as the audio and update callers
+                audio_path = temp_path
 
 
 def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
@@ -132,24 +146,37 @@ def _tts_request(
     if previous_request_ids:
         body["previous_request_ids"] = previous_request_ids
 
-    resp = requests.post(
-        url,
-        headers={
-            "xi-api-key": ELEVENLABS_API_KEY,
-            "Content-Type": "application/json",
-        },
-        json=body,
-        timeout=300,
-    )
+    from src.utils.retry import retry as _retry
 
-    if not resp.ok:
-        # Show the actual error body from ElevenLabs for easier debugging
-        try:
-            err_detail = resp.json()
-        except Exception:
-            err_detail = resp.text[:500]
-        print(f"[Voiceover] ElevenLabs API error {resp.status_code}: {err_detail}")
-    resp.raise_for_status()
+    @_retry(max_attempts=3, base_delay=5.0, max_delay=30.0,
+            exceptions=(requests.RequestException,))
+    def _do_tts_post():
+        r = requests.post(
+            url,
+            headers={
+                "xi-api-key": ELEVENLABS_API_KEY,
+                "Content-Type": "application/json",
+            },
+            json=body,
+            timeout=300,
+        )
+        if not r.ok:
+            try:
+                err_detail = r.json()
+            except Exception:
+                err_detail = r.text[:500]
+            print(f"[Voiceover] ElevenLabs API error {r.status_code}: {err_detail}")
+        r.raise_for_status()
+        return r
+
+    resp = _do_tts_post()
+
+    # Track character usage
+    try:
+        from src.utils.quota_tracker import record_elevenlabs_chars
+        record_elevenlabs_chars(len(text))
+    except Exception:
+        pass
 
     data = resp.json()
     audio_bytes = base64.b64decode(data["audio_base64"])

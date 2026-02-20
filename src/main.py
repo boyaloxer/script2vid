@@ -165,6 +165,33 @@ def run_pipeline(
     if fresh:
         print("Mode: FRESH (ignoring cached stages)")
 
+    # ── Progress tracker ──
+    # Writes _progress.json to the project dir at every stage boundary.
+    # Readable by external tools regardless of stdout buffering.
+    _progress_path = project_dir / "_progress.json"
+    _progress_data = {
+        "project_name": project_name,
+        "started_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        "stages": {},
+        "current_stage": None,
+        "status": "running",
+        "output_path": None,
+    }
+
+    def _update_progress(stage: str, status: str, detail: str | None = None):
+        _progress_data["current_stage"] = stage
+        _progress_data["stages"][stage] = {
+            "status": status,
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            "elapsed_s": round(time.time() - total_start, 1),
+        }
+        if detail:
+            _progress_data["stages"][stage]["detail"] = detail
+        _progress_path.write_text(
+            json.dumps(_progress_data, indent=2, default=str),
+            encoding="utf-8",
+        )
+
     def _save_json(data, name: str) -> Path:
         """Save intermediate data to project folder for debugging."""
         path = project_dir / name
@@ -185,11 +212,14 @@ def run_pipeline(
     if _has_checkpoint("1_segments.json"):
         print("STAGE 1: Script Analysis [CACHED — skipping]")
         segments = _load_json(project_dir / "1_segments.json")
+        _update_progress("1_script_analysis", "cached", f"{len(segments)} segments")
     else:
         print("STAGE 1: Script Analysis")
         print("=" * 60)
+        _update_progress("1_script_analysis", "running")
         segments = analyze_script(script_text)
         _save_json(segments, "1_segments.json")
+        _update_progress("1_script_analysis", "done", f"{len(segments)} segments")
 
     # ──────────────────────────────────────────────
     # Stage 1.5: Text Overlay Generation (opt-in)
@@ -228,11 +258,14 @@ def run_pipeline(
                 fallback = clips_dir / fname
                 if fallback.exists():
                     seg["footage_path"] = str(fallback)
+        _update_progress("2_footage_retrieval", "cached", f"{len(segments)} clips")
     else:
         print("STAGE 2: Footage Retrieval")
         print("=" * 60)
+        _update_progress("2_footage_retrieval", "running")
         segments = find_footage_for_segments(segments, clips_dir)
         _save_json(segments, "2_segments_with_footage.json")
+        _update_progress("2_footage_retrieval", "done", f"{len(segments)} clips")
 
     # Generate credits file for Pexels attribution
     _generate_credits(segments, credits_dir)
@@ -250,9 +283,11 @@ def run_pipeline(
         print("STAGE 3: Voiceover Generation [CACHED — skipping]")
         segments = _load_json(project_dir / "3_segments_with_timing.json")
         alignment = _load_json(project_dir / "3_alignment.json")
+        _update_progress("3_voiceover", "cached")
     else:
         print("STAGE 3: Voiceover Generation")
         print("=" * 60)
+        _update_progress("3_voiceover", "running")
 
         # Reconstruct the full script from segments to ensure alignment
         full_script = " ".join(seg["text"] for seg in segments)
@@ -262,6 +297,7 @@ def run_pipeline(
         # Map timing back onto segments
         segments = map_segments_to_time_ranges(segments, alignment, audio_path)
         _save_json(segments, "3_segments_with_timing.json")
+        _update_progress("3_voiceover", "done")
 
     # ──────────────────────────────────────────────
     # Stage 3.5: Caption Generation (opt-in)
@@ -274,11 +310,14 @@ def run_pipeline(
         if srt_path.exists() and not fresh:
             print("\n" + "=" * 60)
             print("STAGE 3.5: Caption Generation [CACHED — skipping]")
+            _update_progress("3.5_captions", "cached")
         else:
             print("\n" + "=" * 60)
             print("STAGE 3.5: Caption Generation")
             print("=" * 60)
+            _update_progress("3.5_captions", "running")
             srt_path = generate_srt(alignment, srt_path, words_per_cue=cue_words)
+            _update_progress("3.5_captions", "done")
 
     # ──────────────────────────────────────────────
     # Stage 4a: Timeline Assembly (AI → EDL)
@@ -287,11 +326,14 @@ def run_pipeline(
     if _has_checkpoint("4_edl.json"):
         print("STAGE 4: Timeline Assembly [CACHED — skipping]")
         edl = _load_json(project_dir / "4_edl.json")
+        _update_progress("4_timeline", "cached", f"{len(edl)} EDL entries")
     else:
         print("STAGE 4: Timeline Assembly")
         print("=" * 60)
+        _update_progress("4_timeline", "running")
         edl = build_timeline(segments)
         _save_json(edl, "4_edl.json")
+        _update_progress("4_timeline", "done", f"{len(edl)} EDL entries")
 
     # ──────────────────────────────────────────────
     # Stage 4.5: Merge overlay paths into EDL (opt-in)
@@ -314,16 +356,30 @@ def run_pipeline(
     # Stage 4b + 5: Video Assembly & Rendering
     # ──────────────────────────────────────────────
     print("\n" + "=" * 60)
-    print("STAGE 5: Video Rendering")
-    print("=" * 60)
-    output_name = _next_version_name(output_dir, project_name)
-    output_path = assemble_video(
-        edl, audio_path, output_dir, output_name,
-        quality=quality, clips_dir=clips_dir, srt_path=srt_path,
-        vertical=vertical,
-    )
+    cached_output = _load_json(project_dir / "5_output.json") if not fresh else None
+    if cached_output and Path(cached_output["output_path"]).exists():
+        print("STAGE 5: Video Rendering [CACHED — skipping]")
+        output_path = Path(cached_output["output_path"])
+        _update_progress("5_rendering", "cached", str(output_path))
+    else:
+        print("STAGE 5: Video Rendering")
+        print("=" * 60)
+        _update_progress("5_rendering", "running")
+        output_name = _next_version_name(output_dir, project_name)
+        output_path = assemble_video(
+            edl, audio_path, output_dir, output_name,
+            quality=quality, clips_dir=clips_dir, srt_path=srt_path,
+            vertical=vertical,
+        )
+        _save_json({"output_path": str(output_path)}, "5_output.json")
+        _update_progress("5_rendering", "done", str(output_path))
 
     elapsed = time.time() - total_start
+    _progress_data["status"] = "complete"
+    _progress_data["output_path"] = str(output_path)
+    _progress_data["elapsed_s"] = round(elapsed, 1)
+    _update_progress("pipeline", "complete", f"{elapsed:.1f}s total")
+
     print("\n" + "=" * 60)
     print(f"PIPELINE COMPLETE — {elapsed:.1f}s total")
     print(f"Output: {output_path}")
@@ -536,6 +592,29 @@ def main():
     # ══════════════════════════════════════════════════════════════
     #  Post-render: Calendar assignment + YouTube publishing
     # ══════════════════════════════════════════════════════════════
+
+    # Check for existing publish checkpoint to avoid duplicate uploads
+    project_dir = output_path.parent.parent
+    published_checkpoint = project_dir / "6_published.json"
+    already_published = None
+    if published_checkpoint.exists() and not args.fresh:
+        try:
+            already_published = json.loads(
+                published_checkpoint.read_text(encoding="utf-8")
+            )
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    if already_published:
+        print("\n" + "=" * 60)
+        print("STAGE 6: Publishing [ALREADY DONE — skipping]")
+        yt_url = already_published.get("youtube_url", "N/A")
+        slot_time = already_published.get("scheduled_time", "N/A")
+        print(f"  YouTube: {yt_url}")
+        print(f"  Scheduled: {slot_time}")
+        print("  (Use --fresh to force re-upload)")
+        return
+
     yt_title = args.title or project_name.replace("_", " ").title()
     yt_tags = [t.strip() for t in args.tags.split(",")] if args.tags else []
 
@@ -591,6 +670,16 @@ def main():
                     print(f"\n  [Calendar] Slot {slot['id']} -> uploaded")
                     print(f"  [Calendar] Will auto-publish at {slot['scheduled_time']}")
 
+                    # Save publish checkpoint
+                    published_checkpoint.write_text(json.dumps({
+                        "slot_id": slot["id"],
+                        "scheduled_time": slot["scheduled_time"],
+                        "youtube_video_id": result["video_id"],
+                        "youtube_url": result["url"],
+                        "title": yt_title,
+                        "output_path": str(output_path),
+                    }, indent=2), encoding="utf-8")
+
                 except FileNotFoundError as e:
                     print(f"\n{e}")
                     print("  YouTube upload skipped — video assigned to calendar slot.")
@@ -621,6 +710,15 @@ def main():
                 contains_synthetic_media=False,
                 channel_id=args.channel,
             )
+
+            # Save publish checkpoint
+            published_checkpoint.write_text(json.dumps({
+                "youtube_video_id": result["video_id"],
+                "youtube_url": result["url"],
+                "title": yt_title,
+                "output_path": str(output_path),
+            }, indent=2), encoding="utf-8")
+
         except FileNotFoundError as e:
             print(f"\n{e}")
             print("Skipping YouTube upload. Video was still rendered successfully.")

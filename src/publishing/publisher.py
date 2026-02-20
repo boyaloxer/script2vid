@@ -47,8 +47,13 @@ from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload
 
-# OAuth2 scope for uploading videos
-_SCOPES = ["https://www.googleapis.com/auth/youtube.upload"]
+# OAuth2 scopes:
+#   youtube.force-ssl — upload, read, update, delete videos
+#   yt-analytics.readonly — read watch time, retention, CTR, traffic sources
+_SCOPES = [
+    "https://www.googleapis.com/auth/youtube.force-ssl",
+    "https://www.googleapis.com/auth/yt-analytics.readonly",
+]
 
 # Default locations for credentials
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -119,6 +124,10 @@ def _authenticate(
     if token_file.exists():
         try:
             creds = Credentials.from_authorized_user_file(str(token_file), _SCOPES)
+            # Check if saved token has narrower scopes than we need now
+            if creds and creds.scopes and not set(_SCOPES).issubset(creds.scopes):
+                print("[YouTube] Token has outdated scopes — re-authorization needed.")
+                creds = None
         except Exception:
             creds = None
 
@@ -309,11 +318,85 @@ def upload_to_youtube(
     if publish_at:
         print(f"[YouTube] Will auto-publish at: {publish_at}")
 
+    try:
+        from src.utils.quota_tracker import record_youtube_units
+        record_youtube_units(1600, "videos.insert (upload)")
+    except Exception:
+        pass
+
     return {
         "video_id": video_id,
         "url": video_url,
         "status": privacy,
         "publish_at": publish_at,
+    }
+
+
+def update_video_metadata(
+    video_id: str,
+    title: str | None = None,
+    description: str | None = None,
+    tags: list[str] | None = None,
+    category: str | None = None,
+    channel_id: str | None = None,
+    client_secrets: Path | str | None = None,
+    token_file: Path | str | None = None,
+) -> dict:
+    """
+    Update the title, description, tags, or category of an existing YouTube video.
+
+    Only the fields you pass will be changed; omitted fields are preserved.
+
+    Returns:
+        Dict with the updated snippet fields.
+    """
+    channel_hint = None
+    if not token_file:
+        token_file = _resolve_token_path(channel_id)
+        if channel_id:
+            try:
+                from src.publishing.calendar_manager import load_calendar
+                cal = load_calendar()
+                ch_cfg = cal.get("channels", {}).get(channel_id, {})
+                channel_hint = ch_cfg.get("name")
+            except Exception:
+                channel_hint = channel_id
+    creds = _authenticate(client_secrets, token_file, channel_hint=channel_hint)
+    youtube = build("youtube", "v3", credentials=creds)
+
+    # Fetch current snippet so we only override the fields the caller provided
+    resp = youtube.videos().list(part="snippet", id=video_id).execute()
+    items = resp.get("items", [])
+    if not items:
+        raise ValueError(f"Video not found: {video_id}")
+
+    snippet = items[0]["snippet"]
+
+    if title is not None:
+        snippet["title"] = title[:100]
+    if description is not None:
+        snippet["description"] = description
+    if tags is not None:
+        snippet["tags"] = tags
+    if category is not None:
+        snippet["categoryId"] = str(CATEGORIES.get(category.lower(), snippet.get("categoryId", 22)))
+
+    youtube.videos().update(
+        part="snippet",
+        body={"id": video_id, "snippet": snippet},
+    ).execute()
+
+    print(f"[YouTube] Updated video {video_id}")
+    if title is not None:
+        print(f"  Title: {snippet['title']}")
+    if description is not None:
+        print(f"  Description: {snippet['description'][:60]}...")
+
+    return {
+        "video_id": video_id,
+        "title": snippet["title"],
+        "description": snippet["description"],
+        "tags": snippet.get("tags", []),
     }
 
 

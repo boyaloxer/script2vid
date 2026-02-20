@@ -1,11 +1,12 @@
 """
 Shared LLM helper — talks to any OpenAI-compatible chat API.
-Used by script_analyzer and timeline_builder.
+Used by script_analyzer, timeline_builder, agent brain, and script generator.
 """
 
 import json
 import requests
 from src.config import LLM_API_KEY, LLM_BASE_URL, LLM_MODEL  # noqa: E402
+from src.utils.retry import retry
 
 
 def chat(
@@ -41,6 +42,12 @@ def chat(
     if temperature is not None:
         body["temperature"] = temperature
 
+    return _post_chat(body)
+
+
+@retry(max_attempts=3, base_delay=5.0, max_delay=60.0,
+       exceptions=(requests.RequestException, KeyError, json.JSONDecodeError))
+def _post_chat(body: dict) -> str:
     response = requests.post(
         f"{LLM_BASE_URL}/chat/completions",
         headers={
@@ -51,7 +58,21 @@ def chat(
         timeout=600,
     )
     response.raise_for_status()
-    return response.json()["choices"][0]["message"]["content"]
+    data = response.json()
+
+    # Track token usage if the API returns it
+    usage = data.get("usage")
+    if usage:
+        try:
+            from src.utils.quota_tracker import record_llm_tokens
+            record_llm_tokens(
+                usage.get("prompt_tokens", 0),
+                usage.get("completion_tokens", 0),
+            )
+        except Exception:
+            pass  # quota tracking should never crash the pipeline
+
+    return data["choices"][0]["message"]["content"]
 
 
 def chat_json(system_prompt: str, user_prompt: str, temperature: float | None = None) -> dict | list:
