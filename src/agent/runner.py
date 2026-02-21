@@ -308,13 +308,6 @@ def _action_generate(channel_id: str, dry_run: bool, quality: str, session_log: 
             is_vertical=is_vertical,
         )
 
-        if not assigned_slot:
-            session_log.append(f"[{channel_id}] No empty calendar slots — video rendered but not scheduled.")
-            # Still a success — video exists, just no slot
-            if next_topic:
-                _consume_topic(channel_id, next_topic.get("topic", ""))
-            return True
-
         should_publish = defaults.get("publish", False)
         if should_publish:
             from src.publishing.publisher import upload_to_youtube
@@ -325,24 +318,24 @@ def _action_generate(channel_id: str, dry_run: bool, quality: str, session_log: 
                 description=description,
                 tags=yt_tags,
                 category=defaults.get("category", "people"),
-                privacy="private",
-                publish_at=assigned_slot["scheduled_time"],
+                privacy="public",
                 is_short=is_vertical,
                 contains_synthetic_media=False,
                 channel_id=channel_id,
             )
 
-            update_slot(
-                assigned_slot["id"],
-                status="uploaded",
-                youtube_video_id=yt_result["video_id"],
-                youtube_url=yt_result["url"],
-            )
+            if assigned_slot:
+                update_slot(
+                    assigned_slot["id"],
+                    status="uploaded",
+                    youtube_video_id=yt_result["video_id"],
+                    youtube_url=yt_result["url"],
+                )
 
             project_dir = output_path.parent.parent
             (project_dir / "6_published.json").write_text(json.dumps({
-                "slot_id": assigned_slot["id"],
-                "scheduled_time": assigned_slot["scheduled_time"],
+                "slot_id": assigned_slot["id"] if assigned_slot else None,
+                "published_immediately": True,
                 "youtube_video_id": yt_result["video_id"],
                 "youtube_url": yt_result["url"],
                 "title": title,
@@ -350,31 +343,28 @@ def _action_generate(channel_id: str, dry_run: bool, quality: str, session_log: 
             }, indent=2), encoding="utf-8")
 
             session_log.append(
-                f"[{channel_id}] Published: {yt_result['url']} "
-                f"(scheduled {assigned_slot['scheduled_time']})"
+                f"[{channel_id}] Published LIVE: {yt_result['url']}"
             )
-            print(f"  [Agent] Published: {yt_result['url']}")
-            _emit("result", f"Published: {yt_result['url']} (scheduled {assigned_slot['scheduled_time']})", channel_id=channel_id)
+            print(f"  [Agent] Published LIVE: {yt_result['url']}")
+            _emit("result", f"Published LIVE: {yt_result['url']}", channel_id=channel_id)
 
-            # Link this video_id to the training dataset record
             try:
                 update_generation_video_id(title, yt_result["video_id"])
             except Exception:
                 pass
 
-            # Record as episodic memory
             try:
                 from src.agent.memory import record_episode
                 exp_note = f", experiment={experiment_assignment['arm']}" if experiment_assignment else ""
                 record_episode(
                     channel_id,
-                    f"Published \"{title}\" ({yt_result['video_id']}){exp_note}",
+                    f"Published LIVE \"{title}\" ({yt_result['video_id']}){exp_note}",
                     significance="normal",
                 )
             except Exception:
                 pass
         else:
-            session_log.append(f"[{channel_id}] Rendered and scheduled but auto-publish disabled.")
+            session_log.append(f"[{channel_id}] Rendered but auto-publish disabled.")
 
     except Exception as e:
         session_log.append(f"[{channel_id}] Publishing FAILED: {e}")
@@ -768,19 +758,35 @@ def run_agent_loop(
             _action_engage_community(ch, session_log)
             outcome_success = True
 
+        elif action == "execute_command":
+            cmd_id = params.get("command_id")
+            interpretation = params.get("interpretation", "")
+            ch = params.get("channel_id", channels[0])
+            _emit("act", f"Executing user command #{cmd_id}: {interpretation}", channel_id=ch)
+            session_log.append(f"Executing user command #{cmd_id}: {interpretation}")
+            if cmd_id:
+                try:
+                    from src.agent.command_queue import mark_done
+                    mark_done(cmd_id, result=interpretation)
+                except Exception:
+                    pass
+            outcome_success = True
+
         elif action == "wait":
             wait_min = params.get("wait_minutes", 5)
             reason = params.get("reason", "no reason given")
             print(f"  [Agent] Waiting {wait_min}m — {reason}")
             session_log.append(f"Waiting {wait_min}m: {reason}")
+            _emit("info", f"Idle — {reason} (checking back in {wait_min}m)")
             time.sleep(wait_min * 60)
             outcome_success = True
 
         elif action == "stop":
             reason = params.get("reason", "work complete")
-            print(f"\n  [Agent] Stopping: {reason}")
-            session_log.append(f"Stopped: {reason}")
-            _emit("info", f"Agent stopping: {reason}")
+            wait_min = params.get("check_back_minutes", 30)
+            print(f"\n  [Agent] Going idle: {reason}")
+            session_log.append(f"Idle: {reason}")
+            _emit("info", f"Going idle: {reason}")
             try:
                 record_decision_point(
                     world_state_text=state_text,
@@ -794,8 +800,7 @@ def run_agent_loop(
             except Exception:
                 pass
             if continuous:
-                wait_min = 30
-                print(f"  [Agent] Continuous mode — resting {wait_min}m then resuming...")
+                print(f"  [Agent] Resting {wait_min}m then resuming...")
                 _emit("info", f"Resting {wait_min}m before next check...")
                 time.sleep(wait_min * 60)
                 session_log.clear()

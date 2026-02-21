@@ -248,9 +248,17 @@ def build_world_state(channel_filter: list[str] | None = None) -> dict:
         "calendar": check_calendar_state(),
         "pipelines": check_running_pipelines(),
         "quotas": check_quotas(),
+        "user_commands": [],
     }
     if channel_filter:
         state["calendar"] = {k: v for k, v in state["calendar"].items() if k in channel_filter}
+
+    try:
+        from src.agent.command_queue import get_pending
+        state["user_commands"] = get_pending()
+    except Exception:
+        pass
+
     return state
 
 
@@ -369,5 +377,13 @@ def world_state_to_text(state: dict) -> str:
             lines.append(f"\n{ds_text}")
     except Exception:
         pass
+
+    # User commands from dashboard
+    cmds = state.get("user_commands", [])
+    if cmds:
+        lines.append("\n## USER COMMANDS (PRIORITY — handle these first)")
+        for c in cmds:
+            lines.append(f"  [cmd #{c['id']}] \"{c['text']}\" (from {c['source']})")
+        lines.append("  Map each command to the best matching action and execute it.")
 
     return "\n".join(lines)

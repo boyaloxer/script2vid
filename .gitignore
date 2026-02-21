@@ -13,9 +13,17 @@ calendar_data.json
 channels/
 workspace/
 
-# Scripts and thumbnails (content assets)
+# Scripts and thumbnails (content assets — keep example.txt)
 scripts/
+!scripts/example.txt
 thumbnails/
+
+# OS files
+.DS_Store
+
+# Debug / temp
+_debug.log
+_run_*.py
 
 # Python
 __pycache__/

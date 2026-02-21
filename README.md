@@ -1,36 +1,53 @@
 # script2vid
 
-Turn a written script into a fully assembled video with AI-selected stock footage and narrated voiceover — no manual editing required. Supports both short-form vertical content (Shorts/Reels/TikTok) and long-form videos (tested up to 1+ hour).
+An autonomous AI agent that manages YouTube channels end-to-end — from trend research and script generation to video production, publishing, and performance optimization. No manual editing required.
 
-## What You Provide
+The agent runs continuously: it scouts trending topics in your niche, writes scripts, produces videos with AI-selected stock footage and narrated voiceover, publishes them, monitors performance metrics, learns from audience feedback, and iterates to improve content quality over time.
 
-All you need is **3 API keys** and **a script**. Everything else is automated.
+## Features
+
+### Autonomous Agent
+- **Observe → Think → Act → Reflect** loop powered by an LLM (Kimi K2.5 / any OpenAI-compatible model)
+- Continuous operation with intelligent idle periods (waits for metrics to accumulate, then resumes)
+- Trend scouting — discovers rising topics in your channel's niche
+- Audience intelligence — analyzes comments and engagement patterns
+- Content strategy generation — plans video topics based on what's working
+- Multi-perspective critic — three parallel AI reviewers (Devil's Advocate, Viewer Simulator, Style Auditor) evaluate every script before production
+- A/B experiment engine — tests title formats, opening hooks, and other variables with statistical rigor
+- Post-publish optimization — monitors recent uploads and adjusts metadata
+- Persistent memory — beliefs, episode history, and strategies survive across sessions
+- Training dataset builder — captures agent decisions and outcomes for future model fine-tuning
+
+### Video Production Pipeline
+- **Script Analysis** — AI breaks scripts into visual segments with search keywords
+- **Footage Retrieval** — Pexels stock footage, auto-selected and downloaded
+- **Voiceover** — ElevenLabs TTS with character-level timestamps
+- **Captions** — SRT subtitles synced to narration
+- **Text Overlays** — Styled PNGs for quotes, statistics, citations
+- **Timeline Assembly** — AI-generated Edit Decision List
+- **Video Rendering** — FFmpeg processes and assembles the final MP4
+- **YouTube Publishing** — Uploads, scheduling, metadata, and thumbnail support
+
+### Dashboard
+- Real-time 3D visualization of the agent's think-act cycle
+- Live activity feed showing every decision the agent makes
+- Channel metrics, strategy, memory, and experiment status at a glance
+- **Chat with the agent** — ask questions, get status updates, discuss strategy
+- **Command input** — queue instructions for the agent (e.g., `/check metrics`, `/make a video about...`)
+
+### Multi-Channel Support
+- Manage multiple YouTube channels from a single installation
+- Per-channel settings, OAuth tokens, content prompts, and strategies
+- Each channel has its own workspace, calendar, and publishing schedule
+
+## What You Need
 
 | What | Where to get it | Cost |
 |---|---|---|
-| **LLM API key** | Any OpenAI-compatible provider: [Moonshot / Kimi K2.5](https://platform.moonshot.ai/), [OpenAI](https://platform.openai.com/), etc. | Varies by provider |
-| **Pexels API key** | [pexels.com](https://www.pexels.com/api/) — sign up and get a key | Free |
-| **ElevenLabs API key** | [elevenlabs.io](https://elevenlabs.io) — sign up and get a key from your dashboard | Free tier available |
-| **Your script** | A plain text file (`.txt`) in the `scripts/` folder | — |
-
-**What you do NOT need to provide:**
-- No video footage — searched and downloaded automatically from Pexels
-- No audio files — generated automatically by ElevenLabs
-- No editing decisions — the AI handles clip selection, trimming, and sequencing
-- No video editing software — FFmpeg renders the final video
-
-## How It Works
-
-1. **Script Analysis** — An AI breaks your script into visual segments with search keywords and quote/citation classification (chunked for large scripts)
-2. **Text Overlays** *(opt-in)* — Pillow generates styled PNG overlays for direct quotes, statistics, and source citations
-3. **Footage Retrieval** — Searches Pexels for stock footage matching each segment (rate-limited, with automatic pause/resume). Automatically pulls portrait-oriented clips in vertical mode
-4. **Voiceover Generation** — ElevenLabs generates narration audio with character-level timestamps (chunked with Request Stitching for long scripts, then mastered via dynaudnorm + loudnorm for consistent volume)
-5. **Caption Generation** *(opt-in)* — Generates SRT subtitles from word-level timing data, with shorter cues for vertical videos
-6. **Timeline Assembly** — An AI agent creates an Edit Decision List (EDL) mapping clips to the audio timeline, using slot-based timing so footage stays in sync with narration (batched for large segment counts)
-7. **Video Rendering** — FFmpeg processes each clip individually, concatenates them, overlays the narration audio, and optionally burns in captions. Vertical mode positions captions in the lower-third safe zone to avoid platform UI overlap
-8. **YouTube Publishing** *(opt-in)* — Uploads the rendered video to YouTube via the Data API v3, with optional scheduled publishing
-
-All intermediate data is saved as checkpoints. If the pipeline is interrupted, re-running picks up where it left off.
+| **LLM API key** | [Moonshot / Kimi K2.5](https://platform.moonshot.ai/), [OpenAI](https://platform.openai.com/), or any OpenAI-compatible provider | Varies |
+| **Pexels API key** | [pexels.com/api](https://www.pexels.com/api/) | Free |
+| **ElevenLabs API key** | [elevenlabs.io](https://elevenlabs.io) | Free tier available |
+| **FFmpeg** | [ffmpeg.org](https://ffmpeg.org/download.html) | Free |
 
 ## Setup
 
@@ -40,10 +57,8 @@ All intermediate data is saved as checkpoints. If the pipeline is interrupted, r
 pip install -r requirements.txt
 ```
 
-This installs: `moviepy` (audio probing), `requests` (API calls), `python-dotenv` (config), `Pillow` (text overlays), `google-api-python-client` + `google-auth-oauthlib` (YouTube API), `tzdata` (timezone support on Windows).
-
-FFmpeg is also required (used directly for all video rendering). Install it if you don't have it:
-- **Windows:** `winget install FFmpeg` or download from [ffmpeg.org](https://ffmpeg.org/download.html)
+FFmpeg is also required:
+- **Windows:** `winget install FFmpeg`
 - **Mac:** `brew install ffmpeg`
 - **Linux:** `sudo apt install ffmpeg`
 
@@ -53,272 +68,227 @@ FFmpeg is also required (used directly for all video rendering). Install it if y
 cp .env.example .env
 ```
 
-Then open `.env` and fill in your keys:
+Edit `.env` with your keys (see `.env.example` for all options including YouTube Analytics).
 
-```env
-# LLM (any OpenAI-compatible API)
-LLM_API_KEY=your_key_here
-LLM_BASE_URL=https://api.moonshot.ai/v1    # change if using a different provider
-LLM_MODEL=kimi-k2.5                         # change to match your provider's model name
-
-# Pexels
-PEXELS_API_KEY=your_key_here
-
-# ElevenLabs
-ELEVENLABS_API_KEY=your_key_here
-ELEVENLABS_VOICE_ID=21m00Tcm4TlvDq8ikWAM   # optional — pick a voice from ElevenLabs
-```
-
-### 3. (Optional) YouTube API setup
-
-To enable automated YouTube uploads and scheduled publishing:
-
-1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
-2. Enable the **YouTube Data API v3**
-3. Create **OAuth 2.0 Desktop App** credentials
-4. Download as `client_secrets.json` and place it in the project root
-5. On first upload for each channel, a browser window opens for authorization — **select the correct YouTube channel when prompted**
-6. The token is saved per-channel at `channels/<id>/youtube_token.json` so each channel can authenticate to a different YouTube account
-7. All channels share the same `client_secrets.json` (your Google Cloud OAuth app), but each stores its own token
-
-### 4. (Optional) Channel setup
-
-To use the `--channel` flag for one-step scheduled publishing, set up your channels:
+### 3. Set up a channel
 
 ```bash
-# Add a channel to the calendar (supports multiple daily times, comma-separated)
 python -m src.publishing.calendar_manager add-channel \
-  --id deep_thoughts \
-  --name "Deep Thoughts For Zen" \
-  --days mon,tue,wed,thu,fri,sat,sun \
-  --time "12:00,20:00" \
+  --id my_channel \
+  --name "My Channel" \
+  --days mon,wed,fri \
+  --time "12:00" \
   --timezone America/New_York
 
-# Generate placeholder slots
 python -m src.publishing.calendar_manager generate --weeks 4
 ```
 
-Each channel has its own directory under `channels/<id>/` containing:
+Create your channel's content prompt at `channels/my_channel/content_prompt.md` — this defines the channel's voice, style, and content format. See `channels_example/` for a template.
 
-- **`default_settings.json`** — pipeline and publishing defaults (vertical, captions, quality, publish, category, tags, privacy, etc.)
-- **`content_prompt.md`** — LLM prompt template for generating scripts, titles, and descriptions consistent with the channel's voice and style. This is the channel's "character sheet" — designed to be sent to any LLM to produce on-brand content. Standardized sections: Channel Identity, Content Format, Voice & Tone, Script Structure, Title/Description Guidelines, and Examples.
-- **`youtube_token.json`** — per-channel OAuth token (auto-created on first publish)
-- **`workspace/`** — per-video project folders (auto-created by the pipeline)
+### 4. (Optional) YouTube API setup
 
-See `channels_example/` for setup instructions and templates.
+To enable publishing, metrics, and full autonomous operation:
+
+1. Create a project in [Google Cloud Console](https://console.cloud.google.com/)
+2. Enable **YouTube Data API v3** and **YouTube Analytics API**
+3. Create **OAuth 2.0 Desktop App** credentials
+4. Download as `client_secrets.json` in the project root
+5. First publish opens a browser for authorization — select the correct YouTube channel
+
+Per-channel tokens are saved automatically at `channels/<id>/youtube_token.json`.
 
 ## Usage
 
-Place your script in the `scripts/` folder as a `.txt` file, then run:
+### Run the Autonomous Agent
 
 ```bash
-python -u -m src scripts/my_video.txt
+# Run the agent for a single channel (recommended)
+python -Bu -m src.agent.runner --channel my_channel
+
+# Run for all configured channels
+python -Bu -m src.agent.runner --all
+
+# Single session then exit (no continuous loop)
+python -Bu -m src.agent.runner --channel my_channel --once
+
+# Dry run — generate scripts but don't produce or upload
+python -Bu -m src.agent.runner --channel my_channel --dry-run
 ```
 
-The `-u` flag ensures real-time console output (recommended).
+The agent will:
+1. Build a picture of the world (channel state, metrics, pending work)
+2. Decide what to do next (scout trends, generate content, check metrics, etc.)
+3. Execute the action (write a script, produce a video, publish, analyze)
+4. Reflect on the outcome and update its memory
+5. Repeat — or idle and check back later if waiting for metrics
 
-### Options
+### Launch the Dashboard
+
+```bash
+python -B -m src.web.calendar_server --port 5560
+```
+
+Opens at `http://localhost:5560/dashboard`. Run this alongside the agent to watch it work in real-time.
+
+### Chat with the Agent
+
+In the dashboard, use the input bar at the bottom:
+- **Type normally** to chat — ask questions, get status updates, discuss strategy
+- **Start with `/`** to queue a command — e.g., `/check metrics`, `/scout trends`, `/make a video about quantum physics`
+
+Or use the terminal chat:
+
+```bash
+python chat.py --channel my_channel
+```
+
+### Run the Pipeline Directly
+
+You can also use the pipeline without the agent for one-off video production:
+
+```bash
+# Basic usage
+python -u -m src scripts/my_video.txt
+
+# With channel defaults, captions, and auto-publish
+python -u -m src scripts/my_video.txt --channel my_channel --captions
+
+# Vertical short-form
+python -u -m src scripts/my_short.txt --vertical --captions
+
+# Draft quality for quick preview
+python -u -m src scripts/my_video.txt --quality draft
+```
 
 | Flag | Description |
 |---|---|
-| `--quality draft` | Fast rendering (ultrafast FFmpeg preset) — good for previewing |
-| `--quality final` | Higher quality rendering (medium FFmpeg preset) — use for uploads |
-| `--fresh` | Ignore checkpoints and re-run all stages from scratch |
-| `--captions` | Burn closed captions into the video, synced to the narrator's speech |
-| `--overlays` | Enable text overlays for quotes, statistics, and citations (experimental) |
-| `--vertical` | Render in vertical 9:16 format (1080×1920) for TikTok / Reels / YouTube Shorts |
-| `--channel ID` | The single switch: routes workspace, applies channel defaults, renders, assigns to calendar, uploads to YouTube with scheduled time |
-| `--publish` | Upload the rendered video to YouTube after the pipeline completes |
-| `--schedule ISO` | Schedule YouTube publish time (ISO 8601). Implies `--publish` |
-| `--title` | YouTube video title (defaults to project name) |
-| `--description` | YouTube video description |
-| `--tags` | Comma-separated YouTube tags |
-| `--category` | YouTube category: `people`, `education`, `entertainment`, `news`, etc. |
-| `--privacy` | YouTube privacy: `public`, `private`, `unlisted` (default: `private`) |
-
-### Examples
-
-```bash
-# Draft quality for quick preview
-python -u -m src scripts/deep_thoughts_01.txt --quality draft
-
-# Final quality landscape video with captions
-python -u -m src scripts/my_video.txt --quality final --captions
-
-# Vertical short-form for YouTube Shorts
-python -u -m src scripts/my_short.txt --vertical --captions
-
-# One-step channel workflow: render + assign to calendar + upload to YouTube
-python -u -m src scripts/my_short.txt --channel deep_thoughts
-
-# Manual YouTube upload with scheduling
-python -u -m src scripts/my_video.txt --publish --schedule 2026-03-01T14:00:00Z --title "My Video"
-```
-
-### The `--channel` Flag
-
-The `--channel` flag is the primary way to produce and publish videos. When used:
-
-1. **Workspace** routes to `channels/<id>/workspace/` for clean per-channel organization
-2. **Default settings** load from `channels/<id>/default_settings.json` (vertical, captions, quality, etc.)
-3. **Pipeline** runs with those merged settings (explicit CLI flags always override)
-4. **Calendar** auto-assigns the rendered video to the next open slot for that channel
-5. **YouTube** uploads the video as private, scheduled to go public at the slot's time
-6. **Calendar** updates the slot status from `placeholder` → `uploaded`
+| `--channel ID` | Use channel settings, workspace, calendar, and auto-publish |
+| `--quality draft/final` | Rendering quality (ultrafast vs medium FFmpeg preset) |
+| `--captions` | Burn subtitles into the video |
+| `--vertical` | 9:16 format for Shorts/Reels/TikTok |
+| `--overlays` | Text overlays for quotes and citations |
+| `--publish` | Upload to YouTube after rendering |
+| `--schedule ISO` | Schedule YouTube publish time |
+| `--fresh` | Ignore checkpoints, re-run from scratch |
+| `--dry-run` | Generate scripts only |
 
 ### Checkpoint / Resume
 
-Each pipeline stage saves its output as a JSON file. If interrupted, simply re-run the same command. Completed stages are detected and skipped:
-
-```
-STAGE 1: Script Analysis [CACHED — skipping]
-STAGE 2: Footage Retrieval [CACHED — skipping]
-STAGE 3: Voiceover Generation
-...
-```
-
-### Auto-versioning
-
-Running the same script again won't overwrite previous output:
-
-- First run: `deep_thoughts_01.mp4`
-- Second run: `deep_thoughts_01_v2.mp4`
-- Third run: `deep_thoughts_01_v3.mp4`
-
-## Release Calendar
-
-A built-in calendar system for scheduling and tracking video releases across multiple channels.
-
-### CLI
-
-```bash
-# View current schedule
-python -m src.publishing.calendar_manager status
-
-# Add a channel (single time)
-python -m src.publishing.calendar_manager add-channel \
-  --id business --name "Business Channel" --days tue,thu --time 11:00
-
-# Add a channel (multiple daily times)
-python -m src.publishing.calendar_manager add-channel \
-  --id deep_thoughts --name "Deep Thoughts" --days mon,tue,wed,thu,fri,sat,sun --time "12:00,20:00"
-
-# Generate 4 weeks of placeholder slots
-python -m src.publishing.calendar_manager generate --weeks 4
-
-# Upload any videos due in the next 48 hours
-python -m src.publishing.calendar_manager publish-due
-```
-
-### Web UI
-
-```bash
-python -m src.web.calendar_server
-```
-
-Opens the web interface at `http://localhost:5555` with two views:
-
-**Pipeline** (`/`) — create videos from the browser:
-- Select a channel, and its default settings auto-populate (vertical, captions, quality, publish, tags, etc.)
-- Drag-and-drop a `.txt` script file or paste script text directly
-- Enter a title and description
-- Override any channel defaults with toggle switches
-- Hit "Start Pipeline" — the job runs in the background with real-time stage progress and console log
-- Job history shows recent runs and their status
-
-**Calendar** (`/calendar`) — view and manage the release schedule:
-- Per-channel tabs with slot counts and schedule info
-- Monthly calendar grid showing all scheduled slots
-- Click any slot to view/edit details, assign videos, or delete
-- Modals for adding channels and generating placeholder slots
-
-## Output
-
-Each script gets its own folder in the workspace:
-
-```
-channels/
-└── deep_thoughts/
-    ├── default_settings.json       # Channel pipeline + publishing defaults
-    ├── content_prompt.md           # LLM prompt for scripts/titles/descriptions
-    ├── youtube_token.json          # Per-channel OAuth token (auto-created)
-    └── workspace/
-        └── short_01/
-            ├── clips/              # Downloaded stock footage
-            ├── audio/
-            │   └── narration.mp3   # Generated voiceover (mastered)
-            ├── overlays/           # Text overlay PNGs (when --overlays used)
-            ├── thumbnails/         # Thumbnail images (future use)
-            ├── credits/
-            │   └── credits.txt     # Pexels videographer attribution
-            ├── output/
-            │   └── short_01.mp4    # Rendered video
-            ├── 1_segments.json     # AI script analysis
-            ├── 2_segments_with_footage.json
-            ├── 3_alignment.json    # Character-level timing
-            ├── 3_segments_with_timing.json
-            ├── 4_edl.json          # Edit Decision List
-            └── captions.srt        # Subtitle file (when --captions used)
-```
-
-Without `--channel`, the legacy `workspace/` directory is used instead.
+Every pipeline stage saves checkpoints. If interrupted, re-run the same command — completed stages are skipped automatically.
 
 ## Project Structure
 
 ```
 src/
-├── main.py                        # Orchestrator — runs the full pipeline
-├── config.py                      # Settings, API keys, project directories
-├── __init__.py
-├── __main__.py                    # Entry point for python -m src
+├── agent/                        # Autonomous agent system
+│   ├── runner.py                 # Main observe → think → act → reflect loop
+│   ├── brain.py                  # LLM-powered decision engine
+│   ├── observer.py               # World state builder
+│   ├── memory.py                 # Persistent beliefs, episodes, scratchpad
+│   ├── script_generator.py       # LLM script generation from content prompts
+│   ├── critic.py                 # Multi-perspective script review (3 reviewers)
+│   ├── strategist.py             # Content strategy generation
+│   ├── trend_scout.py            # Niche trend discovery
+│   ├── audience.py               # Comment and engagement analysis
+│   ├── analytics.py              # YouTube metrics collection
+│   ├── optimizer.py              # Post-publish video optimization
+│   ├── scheduler.py              # Optimal posting time analysis
+│   ├── community.py              # Comment engagement
+│   ├── experiment_engine.py      # A/B testing framework
+│   ├── dataset_builder.py        # Training data capture
+│   ├── agent_chat.py             # Real-time chat with the agent
+│   ├── command_queue.py          # User command queue
+│   ├── activity_feed.py          # Real-time event stream
+│   └── journal.py                # Session logging
 │
-├── pipeline/                      # Core video production stages
-│   ├── script_analyzer.py         # Stage 1: Script → visual segments
-│   ├── footage_finder.py          # Stage 2: Pexels search → download clips
-│   ├── voiceover.py               # Stage 3: ElevenLabs TTS + timestamps
-│   ├── text_overlay.py            # Stage 1.5: Styled text overlay PNGs
-│   ├── captions.py                # Stage 3.5: SRT caption generation
-│   ├── timeline_builder.py        # Stage 4: AI → Edit Decision List
-│   └── video_assembler.py         # Stage 5: FFmpeg → final MP4
+├── pipeline/                     # Video production stages
+│   ├── script_analyzer.py        # Script → visual segments
+│   ├── footage_finder.py         # Pexels search → download clips
+│   ├── voiceover.py              # ElevenLabs TTS + timestamps
+│   ├── text_overlay.py           # Styled text overlay PNGs
+│   ├── captions.py               # SRT caption generation
+│   ├── timeline_builder.py       # AI → Edit Decision List
+│   └── video_assembler.py        # FFmpeg → final MP4
 │
-├── publishing/                    # YouTube + scheduling
-│   ├── publisher.py               # YouTube Data API v3 upload
-│   └── calendar_manager.py        # Release calendar CLI + logic
+├── publishing/                   # YouTube + scheduling
+│   ├── publisher.py              # YouTube Data API v3 upload
+│   └── calendar_manager.py       # Release calendar management
 │
-├── web/                           # Web interfaces
-│   ├── calendar_server.py         # Threaded HTTP server (pipeline + calendar)
-│   ├── pipeline_runner.py         # Background job runner for web UI
+├── web/                          # Web interfaces
+│   ├── calendar_server.py        # HTTP server (API + static)
+│   ├── dashboard_api.py          # Dashboard data endpoints
+│   ├── pipeline_runner.py        # Background job runner
 │   └── static/
-│       ├── pipeline.html          # Pipeline UI (create videos)
-│       └── calendar.html          # Calendar UI (manage schedule)
+│       ├── dashboard.html        # Agent dashboard (3D viz, live feed, chat)
+│       ├── pipeline.html         # Pipeline UI (manual video creation)
+│       └── calendar.html         # Calendar UI (schedule management)
 │
-└── utils/                         # Shared helpers
-    ├── llm.py                     # OpenAI-compatible chat helper
-    └── rate_limiter.py            # Sliding-window API rate limiter
+├── utils/                        # Shared helpers
+│   ├── llm.py                    # OpenAI-compatible chat helper
+│   ├── quota_tracker.py          # API usage tracking
+│   ├── rate_limiter.py           # Sliding-window rate limiter
+│   └── retry.py                  # Exponential backoff retry
+│
+├── config.py                     # Settings, API keys, directories
+├── main.py                       # Pipeline orchestrator
+└── __main__.py                   # Entry point (python -m src)
 
-scripts/                           # Your .txt video scripts
-channels/                          # Per-channel workspaces, settings, prompts, tokens (gitignored)
-channels_example/                  # Template for setting up new channels (includes content_prompt.md template)
-docs/                              # Development roadmap and planning notes
+channels_example/                 # Channel setup template
+chat.py                           # Terminal chat with the agent
 ```
 
-## Long-Form Content
+## How It Works
 
-The pipeline is designed for long-form videos (1+ hours). Key features that enable this:
+### The Agent Loop
 
-- **Chunked script analysis** — Large scripts are split into ~5K-char chunks for LLM processing
-- **ElevenLabs Request Stitching** — Voice consistency across TTS chunks
-- **Pexels rate limiter** — Automatic pause/resume at 200 req/hr limit
-- **Batched EDL generation** — Timeline built in 25-segment batches
-- **FFmpeg-direct rendering** — Memory-efficient, processes one clip at a time
-- **Checkpoint/resume** — No wasted API calls on re-runs
+```
+┌─────────────────────────────────────────────────┐
+│                  OBSERVE                         │
+│  Build world state: channel metrics, calendar,   │
+│  pending work, API quotas, user commands         │
+├─────────────────────────────────────────────────┤
+│                   THINK                          │
+│  LLM analyzes state and picks the best action:  │
+│  generate content, scout trends, check metrics,  │
+│  run experiments, optimize, or idle              │
+├─────────────────────────────────────────────────┤
+│                    ACT                           │
+│  Execute: write script → critic review →         │
+│  produce video → publish to YouTube              │
+├─────────────────────────────────────────────────┤
+│                  REFLECT                         │
+│  Update memory, log outcomes, adjust strategy    │
+│  for next cycle                                  │
+└─────────────────────────────────────────────────┘
+          ↓ idle 30m then repeat ↑
+```
 
-**Estimated pipeline time for a 1-hour video:** ~4-5 hours (mostly Pexels API rate limiting).
+### The Critic
+
+Every script passes through three independent AI reviewers before production:
+
+- **Devil's Advocate** — actively tries to find reasons NOT to watch. Catches repetitive patterns, weak hooks, and derivative content
+- **Viewer Simulator** — rates tap-through likelihood, watch-through probability, and emotional impact
+- **Style Auditor** — checks compliance with the channel's voice, tone, and format rules
+
+Fatal issues trigger automatic regeneration. The agent keeps iterating until the script passes.
+
+### Experiments
+
+The agent runs controlled A/B tests to optimize content:
+- Tests different title formats, opening hooks, descriptions, and more
+- Assigns videos to control/variant arms automatically
+- Collects performance data and determines statistical significance
+- Updates strategy based on what wins
+
+## Long-Form Support
+
+The pipeline handles videos up to 1+ hours through chunked processing at every stage — LLM analysis, TTS generation, footage retrieval, and timeline assembly all scale gracefully.
 
 ## Cross-Platform
 
-The codebase uses `pathlib.Path` and `subprocess` with `ffmpeg`/`ffprobe`, so it runs on both Windows and macOS/Linux.
+Runs on Windows, macOS, and Linux. Uses `pathlib.Path` throughout and auto-detects FFmpeg.
 
-- **FFmpeg** — On Mac, install with `brew install ffmpeg` and leave `FFMPEG_PATH` unset. The `FFMPEG_PATH` env var is only needed if auto-detection hangs on Windows.
-- **Timezone data** — The `tzdata` package is included in requirements for Windows support (Linux/Mac have system tzdata).
-- **Checkpoint portability** — Checkpoint JSON files store absolute paths. If you copy the workspace between machines, the pipeline resolves paths by filename. Use `--fresh` for a clean start if needed.
+## License
+
+MIT

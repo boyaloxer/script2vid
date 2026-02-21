@@ -118,6 +118,14 @@ class AppHandler(BaseHTTPRequestHandler):
             except Exception as e:
                 self._send_json({"seq": 0, "entries": [], "error": str(e)})
 
+        # ── Command Queue (recent) ───────────────────────────────
+        elif path == "/api/dashboard/commands":
+            try:
+                from src.agent.command_queue import get_recent
+                self._send_json({"commands": get_recent()})
+            except Exception as e:
+                self._send_json({"commands": [], "error": str(e)})
+
         # ── Calendar API ──────────────────────────────────────────
         elif path == "/api/calendar":
             self._send_json(cm.load_calendar())
@@ -203,6 +211,45 @@ class AppHandler(BaseHTTPRequestHandler):
             except (KeyError, ValueError) as e:
                 self._send_json({"error": str(e)}, 400)
 
+        # ── Dashboard: send command ───────────────────────────────
+        elif path == "/api/dashboard/command":
+            body = self._read_body()
+            text = body.get("text", "").strip()
+            if not text:
+                self._send_json({"error": "Empty command"}, 400)
+            else:
+                try:
+                    from src.agent.command_queue import push_command
+                    from src.agent.activity_feed import emit as feed_emit
+                    cmd = push_command(text, source="dashboard")
+                    feed_emit("info", f"User command: {text}", action="user_command")
+                    self._send_json(cmd, 201)
+                except Exception as e:
+                    self._send_json({"error": str(e)}, 500)
+
+        # ── Dashboard: chat with agent ────────────────────────────
+        elif path == "/api/dashboard/chat":
+            body = self._read_body()
+            message = body.get("message", "").strip()
+            channel = body.get("channel")
+            if not message:
+                self._send_json({"error": "Empty message"}, 400)
+            else:
+                try:
+                    from src.agent.agent_chat import agent_reply
+                    from src.agent.activity_feed import emit as feed_emit
+                    feed_emit("info", f"Operator: {message}", action="user_chat")
+                    print(f"[s2v-chat] Calling agent_reply(channel={channel!r})")
+                    reply = agent_reply(message, channel_id=channel)
+                    print(f"[s2v-chat] Got reply: {reply[:80]!r}")
+                    feed_emit("think", f"Agent: {reply[:200]}", action="agent_reply")
+                    self._send_json({"reply": reply})
+                except Exception as e:
+                    import traceback
+                    print(f"[s2v-chat] ERROR: {e}")
+                    traceback.print_exc()
+                    self._send_json({"error": str(e)}, 500)
+
         # ── Pipeline: cancel job ──────────────────────────────────
         elif re.match(r"^/api/pipeline/jobs/[^/]+/cancel$", path):
             job_id = path.split("/")[4]
@@ -271,6 +318,7 @@ class AppHandler(BaseHTTPRequestHandler):
 class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     """Handle each request in a new thread so the browser can't block the API."""
     daemon_threads = True
+    allow_reuse_address = True
 
 
 def start_server(port: int = _PORT) -> None:
@@ -282,7 +330,7 @@ def start_server(port: int = _PORT) -> None:
     print(f"[script2vid] Calendar:  {url}/calendar")
     print(f"[script2vid] Dashboard: {url}/dashboard")
     print("[script2vid] Press Ctrl+C to stop.\n")
-    webbrowser.open(url)
+    webbrowser.open(f"{url}/dashboard")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

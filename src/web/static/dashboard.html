@@ -83,7 +83,18 @@
     transition: color .5s;
   }
 
-  /* Node labels are now THREE.Sprite (3D canvas textures) */
+  /* ── 3D-projected DOM labels ────────────────── */
+  #labelLayer {
+    position: absolute; inset: 0; pointer-events: none; overflow: hidden; z-index: 2;
+  }
+  .node-lbl {
+    position: absolute; left: 0; top: 0; will-change: transform, opacity;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11px; font-weight: 800;
+    letter-spacing: 1.5px; text-transform: uppercase;
+    white-space: nowrap; pointer-events: none;
+    text-shadow: 0 0 6px rgba(0,0,0,.9), 0 0 20px rgba(0,0,0,.5);
+  }
 
   /* ── Container & Header ────────────────────── */
   .container { position: relative; z-index: 1; max-width: 1400px; margin: 0 auto; padding: 0 28px 40px; }
@@ -112,10 +123,24 @@
   .nav a.active { color: var(--accent); background: rgba(129,140,248,.06); border-color: rgba(129,140,248,.12); }
 
   .controls { display: flex; align-items: center; gap: 14px; margin-bottom: 18px; }
-  .channel-select {
+  .channel-badge {
+    display: flex; align-items: center; gap: 8px;
     background: var(--glass); border: 1px solid var(--glass-border);
-    color: var(--text); padding: 7px 14px; border-radius: 8px;
-    font-size: 13px; cursor: pointer; backdrop-filter: blur(12px);
+    padding: 6px 16px; border-radius: 8px; backdrop-filter: blur(12px);
+  }
+  .channel-badge .ch-icon {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), var(--cyan));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 10px; font-weight: 800; color: #fff;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .channel-badge .ch-name {
+    font-size: 13px; font-weight: 600; color: var(--text);
+  }
+  .channel-badge .ch-status {
+    font-size: 9px; color: var(--text3); text-transform: uppercase;
+    letter-spacing: .6px; font-family: 'JetBrains Mono', monospace;
   }
   .refresh-text { font-size: 11px; color: var(--text3); font-family: 'JetBrains Mono', monospace; }
   .agent-state {
@@ -215,6 +240,38 @@
   .te-msg { color: var(--text2); } .te-msg strong { color: var(--cyan); font-weight: 600; }
   .tc { display:inline-block; width:7px; height:12px; background:var(--green); vertical-align:text-bottom; animation:blink 1s step-end infinite; margin-left:3px; }
   @keyframes blink { 50%{opacity:0} }
+  .cmd-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 16px; border-top: 1px solid var(--border);
+    background: rgba(0,0,0,.2);
+  }
+  .cmd-prompt {
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color: var(--green); font-weight: 700; flex-shrink: 0;
+  }
+  .cmd-input {
+    flex: 1; background: transparent; border: none; outline: none;
+    font-family: 'JetBrains Mono', monospace; font-size: 12px;
+    color: var(--text); caret-color: var(--green);
+  }
+  .cmd-input::placeholder { color: var(--text3); }
+  .cmd-send {
+    background: rgba(129,140,248,.1); border: 1px solid rgba(129,140,248,.2);
+    color: var(--accent); padding: 4px 14px; border-radius: 6px;
+    font-family: 'JetBrains Mono', monospace; font-size: 10px;
+    font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+    cursor: pointer; transition: all .2s; flex-shrink: 0;
+  }
+  .cmd-send:hover { background: rgba(129,140,248,.2); border-color: rgba(129,140,248,.4); }
+  .cmd-send:disabled { opacity: .4; cursor: default; }
+  .cmd-hint {
+    font-family: 'JetBrains Mono', monospace; font-size: 9px;
+    color: var(--text3); padding: 2px 16px 6px; letter-spacing: .3px;
+    border-top: 1px solid rgba(255,255,255,.02);
+  }
+  .te.chat-user .te-msg { color: var(--cyan); font-weight: 600; }
+  .te.chat-reply .te-msg { color: var(--green); }
+  .te.chat-reply .te-tag { color: var(--green); background: rgba(52,211,153,.08); }
 
   /* ── Shared ────────────────────────────────── */
   .list { list-style: none; }
@@ -263,9 +320,10 @@
   <div class="loader-bar"><div class="loader-fill"></div></div>
 </div>
 
-<div id="brainSection">
-  <canvas id="brainCanvas"></canvas>
-  <div class="brain-beam"></div>
+  <div id="brainSection">
+    <canvas id="brainCanvas"></canvas>
+    <div id="labelLayer"></div>
+    <div class="brain-beam"></div>
   <div class="hud-corner tl"></div><div class="hud-corner tr"></div>
   <div class="hud-corner bl"></div><div class="hud-corner br"></div>
   <div class="brain-status">
@@ -284,22 +342,34 @@
       <a href="/">Pipeline</a><a href="/calendar">Calendar</a><a href="/dashboard" class="active">Dashboard</a>
     </div>
   </header>
-  <div class="controls">
-    <select class="channel-select" id="channelSelect" onchange="window._dash.refresh()"></select>
-    <span class="refresh-text" id="lastRefresh"></span>
-    <div class="agent-state idle" id="agentState">
-      <div class="agent-orb"></div><span id="agentLabel">Idle</span>
-    </div>
-  </div>
+      <div class="controls">
+        <div class="channel-badge" id="channelBadge">
+          <div class="ch-icon" id="chIcon">?</div>
+          <div>
+            <div class="ch-name" id="chName">Loading...</div>
+            <div class="ch-status" id="chStatus">connecting</div>
+          </div>
+        </div>
+        <span class="refresh-text" id="lastRefresh"></span>
+        <div class="agent-state idle" id="agentState">
+          <div class="agent-orb"></div><span id="agentLabel">Idle</span>
+        </div>
+      </div>
   <div class="terminal" id="terminalCard">
     <div class="terminal-header">
       <span class="td r"></span><span class="td y"></span><span class="td g"></span>
       <span class="terminal-title">Live Activity</span>
     </div>
-    <div class="terminal-scroll" id="terminalFeed">
-      <div class="empty">Waiting for agent activity...<span class="tc"></span></div>
-    </div>
-  </div>
+        <div class="terminal-scroll" id="terminalFeed">
+          <div class="empty">Waiting for agent activity...<span class="tc"></span></div>
+        </div>
+        <div class="cmd-bar">
+          <span class="cmd-prompt">&gt;</span>
+          <input class="cmd-input" type="text" id="cmdInput" placeholder="Talk to the agent or /command..." />
+          <button class="cmd-send" id="cmdSend">Send</button>
+        </div>
+        <div class="cmd-hint">chat to ask questions &mdash; start with <strong>/</strong> to queue a command (e.g. /check metrics, /make a video about...)</div>
+      </div>
   <div class="grid" id="statsGrid"></div>
   <div class="grid" id="mainGrid"></div>
   <div class="grid" id="bottomGrid"></div>
@@ -363,20 +433,15 @@ const EDGE_DEFS = [
   ['observe','audience'],['reflect','optimize'],
 ];
 
-function makeLabel(text, color) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 256; canvas.height = 48;
-  const ctx = canvas.getContext('2d');
-  ctx.font = 'bold 20px monospace';
-  ctx.fillStyle = color;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(text, 128, 24);
-  const tex = new THREE.CanvasTexture(canvas);
-  const mat = new THREE.SpriteMaterial({ map: tex, transparent: true, depthWrite: false });
-  const sprite = new THREE.Sprite(mat);
-  sprite.scale.set(1.0, 0.2, 1);
-  return sprite;
+// ── DOM labels (crisp at any zoom) ──────────────
+const labelLayer = document.getElementById('labelLayer');
+function makeDomLabel(text, color) {
+  const el = document.createElement('div');
+  el.className = 'node-lbl';
+  el.style.color = color;
+  el.textContent = text;
+  labelLayer.appendChild(el);
+  return el;
 }
 
 const starGroup = new THREE.Group();
@@ -406,11 +471,8 @@ for (const [id, def] of Object.entries(NODE_DEFS)) {
     starGroup.add(wire);
   }
 
-  const label = makeLabel(def.label, def.color);
-  label.position.set(def.pos[0], def.pos[1] - (def.r + 0.2), def.pos[2]);
-  starGroup.add(label);
-
-  nodes[id] = { mesh, wire, mat, def, baseColor: c, label, labelText: def.label };
+  const domLabel = makeDomLabel(def.label, def.color);
+  nodes[id] = { mesh, wire, mat, def, baseColor: c, domLabel };
 }
 
 const edges = [];
@@ -454,7 +516,11 @@ let hasTarget = false;
 
 function setActiveNode(id, statusText) {
   if (id === activeNodeId) {
-    if (statusText && id && nodes[id]) updateStatusText(id, statusText);
+    if (statusText && id) {
+      nodeData[id] = statusText;
+      const el = document.getElementById('brainAction');
+      if (el) el.textContent = statusText.slice(0, 100);
+    }
     return;
   }
 
@@ -481,7 +547,7 @@ function setActiveNode(id, statusText) {
   const n = nodes[id];
   n.mat.color.copy(n.baseColor).multiplyScalar(2.0);
   n.mesh.scale.setScalar(1.5);
-  if (statusText) updateStatusText(id, statusText);
+  if (statusText) nodeData[id] = statusText;
 
   if (prevNodeId) {
     const ek = prevNodeId + '-' + id;
@@ -511,32 +577,17 @@ function setActiveNode(id, statusText) {
   };
   phaseEl.textContent = labels[id] || id.toUpperCase();
   phaseEl.style.color = n.def.color;
-  if (statusText) actionEl.textContent = statusText.slice(0, 80);
+  actionEl.textContent = (statusText || nodeData[id] || '').slice(0, 100);
 }
+
+const nodeData = {};
 
 function updateStatusText(id, text) {
-  const short = text.slice(0, 50);
-  const n = nodes[id];
-  if (!n) return;
-  const newLabel = n.def.label + ': ' + short;
-  if (n.labelText !== newLabel) {
-    n.labelText = newLabel;
-    rebuildLabel(n, newLabel, n.def.color);
+  nodeData[id] = text;
+  if (id === activeNodeId) {
+    const el = document.getElementById('brainAction');
+    if (el) el.textContent = text.slice(0, 100);
   }
-}
-
-function rebuildLabel(node, text, color) {
-  if (node.label) {
-    node.label.material.map.dispose();
-    node.label.material.dispose();
-    starGroup.remove(node.label);
-  }
-  const sprite = makeLabel(text, color);
-  sprite.scale.set(Math.max(1.0, text.length * 0.06), 0.2, 1);
-  sprite.position.copy(node.mesh.position);
-  sprite.position.y -= node.def.r + 0.2;
-  starGroup.add(sprite);
-  node.label = sprite;
 }
 
 function fireParticle(fromId, toId) {
@@ -568,12 +619,7 @@ function pulseAt(pos, color) {
 
 function updateNodeInfo(id, text) {
   if (!nodes[id] || !text) return;
-  const n = nodes[id];
-  const newLabel = n.def.label + ': ' + text.slice(0, 40);
-  if (n.labelText !== newLabel) {
-    n.labelText = newLabel;
-    rebuildLabel(n, newLabel, n.def.color);
-  }
+  nodeData[id] = text;
 }
 
 const clock = new THREE.Clock();
@@ -601,12 +647,22 @@ function animate() {
     nodes[activeNodeId].mesh.scale.setScalar(s);
   }
 
+  const cw = W(), ch = H();
   for (const [id, node] of Object.entries(nodes)) {
     node.mesh.getWorldPosition(_wp);
-    const alpha = THREE.MathUtils.smoothstep(_wp.z, -3, 3);
-    node.mat.opacity = 0.15 + alpha * 0.85;
-    if (node.label) node.label.material.opacity = 0.1 + alpha * 0.9;
-    if (node.wire) node.wire.material.opacity = 0.05 + alpha * 0.35;
+    const depth = _wp.z;
+    const alpha = THREE.MathUtils.smoothstep(depth, -4, 4);
+    node.mat.opacity = 0.25 + alpha * 0.75;
+    if (node.wire) node.wire.material.opacity = 0.1 + alpha * 0.3;
+
+    // Project node position to screen for DOM label
+    const proj = _wp.clone().project(camera);
+    const sx = (proj.x * 0.5 + 0.5) * cw;
+    const sy = (-proj.y * 0.5 + 0.5) * ch;
+    const lbl = node.domLabel;
+    const scale = 0.75 + alpha * 0.25;
+    lbl.style.transform = `translate(${sx}px, ${sy + 18}px) translate(-50%, 0) scale(${scale})`;
+    lbl.style.opacity = (0.15 + alpha * 0.85).toFixed(2);
   }
 
   for (const e of edges) {
@@ -777,7 +833,6 @@ window._updateNodeInfo = updateNodeInfo;
   }
 
   async function refresh(){
-    currentChannel=document.getElementById('channelSelect').value;
     try{
       const [ov,mem,exps,intel,sessions,ds]=await Promise.all([api('overview'),api('memory'),api('experiments'),api('intelligence'),api('sessions'),api('dataset')]);
       renderStats(ov);
@@ -787,53 +842,176 @@ window._updateNodeInfo = updateNodeInfo;
     }catch(e){console.error('Refresh:',e);}
   }
 
-  // ── Activity Feed ──────────────────────────────
-  let feedSeq=0, feedEntries=[];
+  // ── Activity Feed (append-only, no flicker) ────
+  let feedSeq=0, feedEntries=[], feedRendered=0;
   function feedTime(ts){if(!ts)return '';return new Date(ts*1000).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});}
 
-  function renderFeed(){
-    const el=document.getElementById('terminalFeed'),card=document.getElementById('terminalCard');
+  function makeFeedRow(e){
+    const d=document.createElement('div'); d.className='te';
+    d.innerHTML='<span class="te-ts">'+feedTime(e.ts)+'</span><span class="te-tag '+e.type+'">'+e.type+'</span><span class="te-msg">'+(e.channel?'<strong>['+e.channel+']</strong> ':'')+e.message+'</span>';
+    return d;
+  }
+
+  function appendNewEntries(newEntries){
+    const el=document.getElementById('terminalFeed');
+    if(feedRendered===0 && !feedEntries.length) return;
+    // First render — build from scratch once
+    if(feedRendered===0){
+      el.innerHTML='';
+      const recent=feedEntries.slice(-50).reverse();
+      const frag=document.createDocumentFragment();
+      recent.forEach(e=>frag.appendChild(makeFeedRow(e)));
+      el.appendChild(frag);
+      feedRendered=feedEntries.length;
+      return;
+    }
+    // Incremental — prepend only new rows
+    if(!newEntries.length) return;
+    const frag=document.createDocumentFragment();
+    for(let i=newEntries.length-1;i>=0;i--) frag.appendChild(makeFeedRow(newEntries[i]));
+    el.insertBefore(frag,el.firstChild);
+    // Trim DOM to 50 visible rows
+    while(el.children.length>50) el.removeChild(el.lastChild);
+    feedRendered=feedEntries.length;
+  }
+
+  function updateAgentState(){
     const stEl=document.getElementById('agentState'),stLab=document.getElementById('agentLabel');
+    const card=document.getElementById('terminalCard');
     if(!feedEntries.length){
-      el.innerHTML='<div class="empty">Waiting for agent activity...<span class="tc"></span></div>';
       stEl.className='agent-state idle'; stLab.textContent='Idle';
       card.classList.remove('active');
       if(window._setActiveNode)window._setActiveNode(null,'');
       return;
     }
-    const recent=feedEntries.slice(-40).reverse();
     const last=feedEntries[feedEntries.length-1];
     const isLive=(Date.now()/1000-(last?.ts||0))<120;
     if(isLive){
       stEl.className='agent-state live'; card.classList.add('active');
-      const labels={think:'Thinking',act:'Acting',observe:'Observing',result:'Complete',error:'Error'};
+      const labels={think:'Thinking',act:'Acting',observe:'Observing',result:'Complete',error:'Error',info:'Active'};
       stLab.textContent=labels[last.type]||'Running';
       const nodeId=ACTION_NODE[last.action]||EVENT_NODE[last.type]||'core';
       if(window._setActiveNode)window._setActiveNode(nodeId,last.message||'');
+      if(last.channel && last.channel !== currentChannel){
+        currentChannel=last.channel;
+        updateChannelBadge(last.channel,'active');
+        refresh();
+      }
     }else{
       stEl.className='agent-state idle'; stLab.textContent='Idle';
       card.classList.remove('active');
       if(window._setActiveNode)window._setActiveNode(null,'');
     }
-    el.innerHTML=recent.map(e=>'<div class="te"><span class="te-ts">'+feedTime(e.ts)+'</span><span class="te-tag '+e.type+'">'+e.type+'</span><span class="te-msg">'+(e.channel?'<strong>['+e.channel+']</strong> ':'')+e.message+'</span></div>').join('')+'<div style="padding:2px"><span class="tc"></span></div>';
-    el.scrollTop=0;
   }
+
   async function pollFeed(){
     try{
       const data=await(await fetch('/api/dashboard/activity?since='+feedSeq)).json();
-      if(data.entries?.length){feedEntries.push(...data.entries);if(feedEntries.length>200)feedEntries=feedEntries.slice(-200);feedSeq=data.seq;renderFeed();}
-      else if(feedEntries.length)renderFeed();
+      if(data.entries?.length){
+        const fresh=data.entries;
+        feedEntries.push(...fresh);
+        if(feedEntries.length>200) feedEntries=feedEntries.slice(-200);
+        feedSeq=data.seq;
+        appendNewEntries(fresh);
+      }
+      updateAgentState();
     }catch(e){}
+  }
+
+  function updateChannelBadge(name, status) {
+    const nameEl = document.getElementById('chName');
+    const statusEl = document.getElementById('chStatus');
+    const iconEl = document.getElementById('chIcon');
+    if (nameEl) nameEl.textContent = name || 'Unknown';
+    if (statusEl) statusEl.textContent = status || 'active';
+    if (iconEl && name) iconEl.textContent = name.slice(0, 2).toUpperCase();
+  }
+
+  async function handleInput() {
+    const input = document.getElementById('cmdInput');
+    const btn = document.getElementById('cmdSend');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+
+    const el = document.getElementById('terminalFeed');
+
+    if (text.startsWith('/')) {
+      // Queue a command for the agent loop
+      const cmd = text.slice(1).trim();
+      if (!cmd) return;
+      const row = document.createElement('div');
+      row.className = 'te chat-user';
+      row.innerHTML = '<span class="te-ts">' + new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'}) + '</span><span class="te-tag info">cmd</span><span class="te-msg">/' + cmd + '</span>';
+      el.insertBefore(row, el.firstChild);
+      try {
+        await fetch('/api/dashboard/command', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text: cmd }),
+        });
+      } catch(e) { console.error('Command failed:', e); }
+    } else {
+      // Chat with the agent (real-time LLM response)
+      const ts = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+      const userRow = document.createElement('div');
+      userRow.className = 'te chat-user';
+      userRow.innerHTML = '<span class="te-ts">' + ts + '</span><span class="te-tag think">you</span><span class="te-msg">' + text + '</span>';
+      el.insertBefore(userRow, el.firstChild);
+
+      btn.disabled = true; btn.textContent = '...';
+      try {
+        const resp = await fetch('/api/dashboard/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message: text, channel: currentChannel }),
+        });
+        const data = await resp.json();
+        const reply = data.reply || data.error || 'No response';
+        const replyRow = document.createElement('div');
+        replyRow.className = 'te chat-reply';
+        const rts = new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});
+        replyRow.innerHTML = '<span class="te-ts">' + rts + '</span><span class="te-tag think">agent</span><span class="te-msg">' + reply.replace(/</g,'&lt;').replace(/>/g,'&gt;') + '</span>';
+        el.insertBefore(replyRow, el.firstChild);
+      } catch(e) {
+        console.error('Chat failed:', e);
+        const errRow = document.createElement('div');
+        errRow.className = 'te';
+        errRow.innerHTML = '<span class="te-ts"></span><span class="te-tag error">error</span><span class="te-msg">Chat failed: ' + e.message + '</span>';
+        el.insertBefore(errRow, el.firstChild);
+      }
+      btn.disabled = false; btn.textContent = 'Send';
+    }
   }
 
   async function init(){
     try{
       const ov=await api('overview');
-      const sel=document.getElementById('channelSelect');
       const chs=Object.keys(ov.channels||{});
-      sel.innerHTML=chs.map(c=>'<option value="'+c+'">'+(ov.channels[c].name||c)+'</option>').join('');
-      if(chs.length){currentChannel=chs[0];sel.value=chs[0];}
+      // Auto-detect active channel from recent activity
+      let bestCh = chs[0] || null;
+      try {
+        const feed = await(await fetch('/api/dashboard/activity?since=0')).json();
+        const entries = feed.entries || [];
+        for (let i = entries.length - 1; i >= 0; i--) {
+          if (entries[i].channel && chs.includes(entries[i].channel)) {
+            bestCh = entries[i].channel; break;
+          }
+        }
+      } catch(e){}
+      if(bestCh){
+        currentChannel = bestCh;
+        const chData = ov.channels[bestCh];
+        updateChannelBadge(chData?.name || bestCh, chs.length + ' channel' + (chs.length>1?'s':''));
+      }
     }catch(e){}
+
+    // Chat + command input
+    const cmdInput = document.getElementById('cmdInput');
+    const cmdSend = document.getElementById('cmdSend');
+    cmdSend.addEventListener('click', handleInput);
+    cmdInput.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) handleInput(); });
+
     refresh(); pollFeed();
     setInterval(refresh,30000);
     setInterval(pollFeed,3000);

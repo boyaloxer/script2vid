@@ -18,7 +18,7 @@ def chat(
     """
     Send a chat completion request and return the assistant's reply text.
 
-    Note: Kimi K2.5 only accepts temperature=0.6 (non-thinking) or 1.0 (thinking).
+    Note: Kimi K2.5 currently only accepts temperature=1.0 (thinking mode).
     If temperature is None, it is omitted so the API uses its default.
 
     max_tokens prevents silent output truncation — Kimi K2.5 may default to a
@@ -46,7 +46,7 @@ def chat(
 
 
 @retry(max_attempts=3, base_delay=5.0, max_delay=60.0,
-       exceptions=(requests.RequestException, KeyError, json.JSONDecodeError))
+       exceptions=(requests.ConnectionError, requests.Timeout, KeyError, json.JSONDecodeError))
 def _post_chat(body: dict) -> str:
     response = requests.post(
         f"{LLM_BASE_URL}/chat/completions",
