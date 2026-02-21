@@ -70,7 +70,7 @@
   .hud-corner.br{bottom:10px;right:10px;border-width:0 1px 1px 0}
 
   .brain-status {
-    position: absolute; bottom: 32px; left: 50%; transform: translateX(-50%);
+    position: absolute; top: 14px; left: 50%; transform: translateX(-50%);
     text-align: center; z-index: 4; pointer-events: none;
   }
   .brain-status .phase {
@@ -536,6 +536,12 @@ function setActiveNode(id, statusText) {
 
   if (!id || !nodes[id]) {
     hasTarget = false;
+    // Restore CORE to full size
+    if (nodes.core) {
+      nodes.core.mesh.scale.setScalar(1);
+      nodes.core.mat.opacity = 1;
+      if (nodes.core.domLabel) nodes.core.domLabel.style.display = '';
+    }
     const phaseEl = document.getElementById('brainPhase');
     const actionEl = document.getElementById('brainAction');
     phaseEl.textContent = 'IDLE';
@@ -566,6 +572,12 @@ function setActiveNode(id, statusText) {
     const forward = new THREE.Vector3(0, 0, 1);
     targetQuat.setFromUnitVectors(pos, forward);
     hasTarget = true;
+    // Shrink and fade CORE so the active node owns the center
+    if (nodes.core) {
+      nodes.core.mesh.scale.setScalar(0.3);
+      nodes.core.mat.opacity = 0.15;
+      if (nodes.core.domLabel) nodes.core.domLabel.style.display = 'none';
+    }
   }
 
   const phaseEl = document.getElementById('brainPhase');
