@@ -39,6 +39,11 @@ Respond with valid JSON only, no markdown fences:
   "description": "The YouTube description with hashtags",
   "topic_reasoning": "1-2 sentences on why you chose this topic"
 }
+
+CRITICAL: Each JSON value must be the FINAL content only. Do NOT include
+deliberation, alternatives, or reasoning inside the JSON values. If you're
+considering multiple titles, pick ONE and put only that in "title". Put your
+reasoning in "topic_reasoning" only.
 """
 
 
@@ -130,4 +135,34 @@ def generate_script(
     if missing:
         raise ValueError(f"LLM response missing keys: {missing}")
 
+    result["title"] = _clean_title(result["title"])
     return result
+
+
+def _clean_title(raw_title: str) -> str:
+    """
+    Fix titles where the LLM leaked its deliberation into the value.
+    e.g. "'Option A' or 'Option B.' Shorter, more specific..." → "Option A"
+    """
+    title = raw_title.strip()
+
+    # If it contains " or " with quotes, the LLM listed alternatives — take the first
+    if "' or '" in title or "\" or \"" in title:
+        import re
+        match = re.match(r"""^['"](.+?)['"]""", title)
+        if match:
+            title = match.group(1)
+
+    # Truncate at sentence-ending punctuation followed by explanation
+    for sep in [". ", "— ", " - ", "; "]:
+        if sep in title:
+            candidate = title.split(sep)[0].strip()
+            if len(candidate) >= 8:
+                title = candidate
+                break
+
+    # Strip surrounding quotes if present
+    if len(title) > 2 and title[0] in ("'", '"') and title[-1] in ("'", '"'):
+        title = title[1:-1]
+
+    return title.strip()
