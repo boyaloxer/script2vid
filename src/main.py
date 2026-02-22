@@ -260,10 +260,11 @@ def run_pipeline(
                     seg["footage_path"] = str(fallback)
         _update_progress("2_footage_retrieval", "cached", f"{len(segments)} clips")
     else:
-        print("STAGE 2: Footage Retrieval")
+        print("STAGE 2: Footage Retrieval (Pexels)")
         print("=" * 60)
         _update_progress("2_footage_retrieval", "running")
         segments = find_footage_for_segments(segments, clips_dir)
+
         _save_json(segments, "2_segments_with_footage.json")
         _update_progress("2_footage_retrieval", "done", f"{len(segments)} clips")
 

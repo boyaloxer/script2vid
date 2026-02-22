@@ -18,42 +18,45 @@ from src.utils.llm import chat_json
 _CHUNK_CHARS = 5_000
 
 SYSTEM_PROMPT = """\
-You are a video production assistant. Your job is to analyze a video script and \
-break it into visual segments for a stock-footage-based video.
+You are a video essay editor planning what the viewer should SEE for each segment of a script.
 
 For each segment, provide:
 - "segment_id": sequential integer starting at 1
 - "text": the exact script text for this segment (a sentence or small group of sentences)
-- "visual_description": a concise description of what the viewer should SEE on screen \
-  while this text is being narrated (be specific and visual, not abstract)
-- "mood": one or two words describing the emotional tone (e.g. "calm", "energetic", "dramatic")
-- "search_keywords": a list of 2-4 short keyword phrases optimized for searching stock \
-  footage (e.g. ["city skyline night", "urban lights aerial"])
+- "visual_description": a short description of the ideal shot
+- "mood": one or two words for emotional tone
+- "search_keywords": 2-4 keyword phrases for STOCK FOOTAGE search (see rules below)
+- "visual_type": one of "specific_footage", "illustrative", or "data_visual"
 - "quote_type": one of "none", "direct_quote", "statistic", or "source_citation". \
-  Use "direct_quote" when someone is being quoted or paraphrased (e.g. 'analysts said...', \
-  'according to X...'). Use "statistic" when a striking number or data point is the focus \
-  (e.g. '$2.6 billion in liquidations', 'dropped 46%'). Use "source_citation" when a \
-  specific source or report is named without a direct quote (e.g. 'a report published by...', \
-  'data from Glassnode showed...'). Use "none" for all other segments (narration, \
-  transitions, analysis, etc.). Most segments should be "none" — only mark segments where \
-  an on-screen text overlay would genuinely add value.
-- "quote_text": the exact text to display on screen (only if quote_type is NOT "none"). \
-  For "direct_quote": the quoted words or paraphrased claim, kept concise (under 120 chars). \
-  For "statistic": the key number and brief context, e.g. "$2.6B liquidated in 24 hours". \
-  For "source_citation": the source name and date, e.g. "Fortune, Feb 6 2026". \
-  Omit this field or set to null when quote_type is "none".
-- "quote_attribution": who said it or where it came from (only for "direct_quote" and \
-  "source_citation", e.g. "Deutsche Bank analysts", "Bitwise CIO Matt Hougan"). \
-  Omit or set to null when not applicable.
+  Most segments should be "none". Only use for actual quotes or key statistics.
+- "quote_text": text to display (only if quote_type is NOT "none"), under 120 chars.
+- "quote_attribution": who said it (only for quotes/citations).
 
-Rules:
-- Keep segments short — typically one or two sentences each.
-- Every word of the original script must appear in exactly one segment (no omissions, no overlap).
-- Visual descriptions should be concrete enough to find matching stock footage \
-  (avoid vague terms like "concept of growth").
-- Keywords should be diverse — don't repeat the same keyword across segments when possible.
-- Be selective with quote_type — only 10-20% of segments should have a non-"none" value. \
-  Overusing text overlays makes the video cluttered. Reserve them for impactful moments.
+CRITICAL RULES FOR search_keywords (this determines what footage appears in the video):
+
+search_keywords are used to search a STOCK FOOTAGE library (like Pexels/Shutterstock). \
+Stock footage does NOT contain specific branded products, named people, or historical events. \
+You must translate specific references into GENERIC visual equivalents.
+
+EXAMPLES OF GOOD TRANSLATIONS:
+- Script mentions "NES controller" → search: "retro gaming controller", "vintage gamepad"
+- Script mentions "Hiroshi Yamauchi" → search: "Japanese businessman office", "corporate executive"
+- Script mentions "video game crash of 1983" → search: "empty store shelves", "economic decline"
+- Script mentions "Famicom launch in Japan" → search: "product launch Japan", "electronics store"
+- Script mentions "D-pad design" → search: "gaming controller close up", "game controller buttons"
+- Script mentions "Lance Barr redesigned it" → search: "industrial designer working", "product design"
+- Script mentions "it looked like a VCR" → search: "VCR vintage electronics", "retro technology"
+- Script mentions "patent filed" → search: "patent document", "legal paperwork"
+
+THE MAIN SUBJECT RULE: Identify the GENERIC visual category of the main subject. \
+If the video is about a gaming controller, at least 40-50% of search_keywords should \
+reference gaming/controllers generically: "gaming controller", "retro gaming", \
+"video game controller close up", "person playing video games", "arcade gaming". \
+Variety is important — use different angles and contexts of the same general subject.
+
+VARIETY RULE: Adjacent segments should NOT have identical search_keywords. \
+Vary the angle: "retro gaming controller" then "person playing video games" then \
+"gaming controller buttons close up" — not the same phrase three times in a row.
 
 Respond ONLY with a valid JSON array of segment objects. No extra text.\
 """
@@ -121,6 +124,11 @@ def _analyze_chunk(chunk_text: str, chunk_label: str = "") -> list[dict]:
             raise last_error
 
         required_keys = {"segment_id", "text", "visual_description", "mood", "search_keywords"}
+        # Ensure new fields have defaults for backward compatibility
+        for seg in segments:
+            seg.setdefault("visual_type", "illustrative")
+            seg.setdefault("visual_search", " ".join(seg.get("search_keywords", [])[:2]))
+            seg.setdefault("context_label", None)
         for seg in segments:
             missing = required_keys - set(seg.keys())
             if missing:

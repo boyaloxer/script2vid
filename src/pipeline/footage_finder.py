@@ -102,24 +102,58 @@ def _pick_best_file(video: dict, min_height: int = 720) -> dict | None:
     return candidates[0]
 
 
-def _score_video(video: dict, keywords: list[str]) -> float:
+_STOP_WORDS = frozenset(
+    "a an the of in on at to for and or is it by with from".split()
+)
+
+
+def _parse_slug(url: str) -> str:
+    """Extract human-readable description from a Pexels URL slug.
+
+    'https://www.pexels.com/video/close-up-shot-of-a-controller-123/'
+    → 'close up shot of a controller'
     """
-    Simple relevance score: count how many of our keywords appear in the
-    video's URL slug or tags. Higher is better.
-    """
-    # Pexels doesn't return explicit tags, but the video URL contains a slug
-    url_slug = video.get("url", "").lower()
+    if "/video/" not in url:
+        return ""
+    slug = url.split("/video/")[1].rstrip("/")
+    # Strip trailing numeric ID
+    parts = slug.rsplit("-", 1)
+    if len(parts) == 2 and parts[1].isdigit():
+        slug = parts[0]
+    return slug.replace("-", " ").lower()
+
+
+def _score_video(video: dict, keywords: list[str], needed_duration: float = 0) -> float:
+    """Score a Pexels video for relevance using URL slug description and duration fit."""
+    slug_text = _parse_slug(video.get("url", ""))
+
     score = 0.0
+
+    # Match keyword words against the slug description
     for kw in keywords:
-        for word in kw.lower().split():
-            if word in url_slug:
-                score += 1.0
-    # Slight bonus for longer duration (more flexibility for trimming)
+        kw_words = [w for w in kw.lower().split() if w not in _STOP_WORDS and len(w) > 2]
+        matches = sum(1 for w in kw_words if w in slug_text)
+        if kw_words:
+            score += (matches / len(kw_words)) * 3.0
+
+    # Duration: strongly prefer clips that fill the slot without looping
     duration = video.get("duration", 0)
-    if duration >= 5:
-        score += 0.5
-    if duration >= 10:
-        score += 0.5
+    if needed_duration > 0 and duration > 0:
+        if duration >= needed_duration:
+            score += 4.0
+        elif duration >= needed_duration * 0.5:
+            score += 2.0
+        else:
+            score += 0.5
+    elif duration >= 10:
+        score += 1.0
+
+    # Small bonus for HD
+    for vf in video.get("video_files", []):
+        if vf.get("height", 0) >= 1080:
+            score += 0.5
+            break
+
     return score
 
 
@@ -133,6 +167,21 @@ def download_clip(url: str, dest: Path) -> Path:
         for chunk in resp.iter_content(chunk_size=8192):
             f.write(chunk)
     return dest
+
+
+def _extract_main_subject(segments: list[dict]) -> str:
+    """Extract a stock-footage-friendly main subject from the first few segments."""
+    # Collect all search_keywords from the first 5 segments and find the most common
+    from collections import Counter
+    kw_counts: Counter[str] = Counter()
+    for seg in segments[:8]:
+        for kw in seg.get("search_keywords", []):
+            kw_counts[kw.lower()] += 1
+    if kw_counts:
+        return kw_counts.most_common(1)[0][0]
+    # Fallback: use the first segment's first keyword
+    first_kw = segments[0].get("search_keywords", [""])
+    return first_kw[0] if first_kw else ""
 
 
 def find_footage_for_segments(
@@ -156,14 +205,20 @@ def find_footage_for_segments(
     if used_video_ids is None:
         used_video_ids = set()
 
+    main_subject = _extract_main_subject(segments)
+
     for seg in segments:
         seg_id = seg["segment_id"]
+
+        # Skip segments that already have footage (e.g. from web search)
+        if seg.get("footage_path") and Path(seg["footage_path"]).exists():
+            print(f"[Footage Finder] Segment {seg_id}: already has footage, skipping")
+            continue
 
         # Check if a clip already exists on disk for this segment
         existing = list(clips_dir.glob(f"seg{seg_id}_*.mp4"))
         if existing:
             clip = existing[0]
-            # Extract Pexels video ID from filename: seg{id}_{pexels_id}.mp4
             try:
                 pexels_id = int(clip.stem.split("_", 1)[1])
             except (ValueError, IndexError):
@@ -179,17 +234,25 @@ def find_footage_for_segments(
                 used_video_ids.add(pexels_id)
             continue
 
-        keywords = seg["search_keywords"]
-        query = " ".join(keywords[:2])  # combine top 2 keyword phrases
+        keywords = seg.get("search_keywords", [])
+        if not keywords:
+            keywords = [main_subject] if main_subject else ["background"]
 
+        # First attempt: combine top 2 keywords for specificity
+        query = " ".join(keywords[:2])
         print(f"[Footage Finder] Segment {seg_id}: searching \"{query}\"...")
         videos = search_videos(query)
 
-        if not videos:
-            # Retry with a broader single keyword
+        # Second attempt: broaden to just the first keyword
+        if not videos and len(keywords) > 1:
             query = keywords[0]
             print(f"[Footage Finder]   No results. Retrying with \"{query}\"...")
             videos = search_videos(query)
+
+        # Third attempt: use the video's main subject as ultimate fallback
+        if not videos and main_subject and main_subject.lower() != query.lower():
+            print(f"[Footage Finder]   Still nothing. Trying main subject \"{main_subject}\"...")
+            videos = search_videos(main_subject)
 
         if not videos:
             print(f"[Footage Finder]   WARNING: No footage found for segment {seg['segment_id']}.")
@@ -202,17 +265,18 @@ def find_footage_for_segments(
             continue
 
         # Score and sort, skipping already-used videos for variety
+        needed_dur = seg.get("slot_duration", 0)
         scored = []
         for v in videos:
             vid = v.get("id")
             if vid in used_video_ids:
                 continue
-            scored.append((v, _score_video(v, keywords)))
+            scored.append((v, _score_video(v, keywords, needed_dur)))
         scored.sort(key=lambda x: x[1], reverse=True)
 
         # If all videos were used, allow repeats
         if not scored:
-            scored = [(v, _score_video(v, keywords)) for v in videos]
+            scored = [(v, _score_video(v, keywords, needed_dur)) for v in videos]
             scored.sort(key=lambda x: x[1], reverse=True)
 
         best_video = scored[0][0]

@@ -315,6 +315,64 @@ def _render_source_citation(
 
 
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Context Label — lower-third bar showing what footage is (documentary style)
+# ---------------------------------------------------------------------------
+
+def _render_context_label(
+    label_text: str,
+    attribution: str | None = None,
+) -> Image.Image:
+    """
+    Render a clean lower-third context label. Used to show what footage
+    the viewer is looking at (e.g., "Tokyo, Japan", "Apollo 11 — 1969").
+
+    Design: semi-transparent dark pill in the lower-left with a thin
+    accent line on the left edge. Small, unobtrusive, documentary-style.
+    """
+    W, H = _cfg.OUTPUT_WIDTH, _cfg.OUTPUT_HEIGHT
+    img = Image.new("RGBA", (W, H), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+
+    font_size = max(18, int(H * 0.022))
+    font = _load_font(font_size, bold=True)
+
+    text = label_text.strip()
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw = bbox[2] - bbox[0]
+    th = bbox[3] - bbox[1]
+
+    pad_x, pad_y = 16, 10
+    bar_w = tw + pad_x * 2 + 6
+    bar_h = th + pad_y * 2
+
+    # Position: lower-left corner with margin
+    margin = int(H * 0.06)
+    x = margin
+    y = H - margin - bar_h
+
+    # Semi-transparent dark background
+    draw.rounded_rectangle(
+        [x, y, x + bar_w, y + bar_h],
+        radius=4,
+        fill=(10, 10, 20, 180),
+    )
+
+    # Thin accent line on the left
+    accent = (129, 140, 248, 220)
+    draw.rectangle([x, y, x + 3, y + bar_h], fill=accent)
+
+    # Label text
+    draw.text(
+        (x + pad_x + 6, y + pad_y),
+        text,
+        font=font,
+        fill=(230, 230, 240, 240),
+    )
+
+    return img
+
+
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -344,6 +402,7 @@ def generate_overlay(
         "direct_quote": _render_direct_quote,
         "statistic": _render_statistic,
         "source_citation": _render_source_citation,
+        "context_label": _render_context_label,
     }
 
     renderer = renderers.get(quote_type)
@@ -373,33 +432,47 @@ def generate_overlays_for_segments(
     """
     count = 0
     for seg in segments:
+        seg_id = seg["segment_id"]
+
+        # Quote/citation overlays (existing behavior)
         quote_type = seg.get("quote_type", "none")
         quote_text = seg.get("quote_text")
 
-        if quote_type == "none" or not quote_text:
-            seg["overlay_path"] = None
-            continue
-
-        seg_id = seg["segment_id"]
-        out_path = overlays_dir / f"overlay_seg{seg_id}_{quote_type}.png"
-
-        if out_path.exists():
-            print(f"[Overlay] Segment {seg_id}: using cached {out_path.name}")
+        if quote_type != "none" and quote_text:
+            out_path = overlays_dir / f"overlay_seg{seg_id}_{quote_type}.png"
+            if out_path.exists():
+                print(f"[Overlay] Segment {seg_id}: using cached {out_path.name}")
+            else:
+                attribution = seg.get("quote_attribution")
+                print(f"[Overlay] Segment {seg_id}: generating {quote_type} overlay...")
+                generate_overlay(
+                    quote_type=quote_type,
+                    quote_text=quote_text,
+                    attribution=attribution,
+                    output_path=out_path,
+                )
             seg["overlay_path"] = str(out_path)
             count += 1
             continue
 
-        attribution = seg.get("quote_attribution")
+        # Context label overlay (from visual research — documentary-style lower third)
+        context_label = seg.get("context_label")
+        if context_label:
+            out_path = overlays_dir / f"overlay_seg{seg_id}_context.png"
+            if out_path.exists():
+                print(f"[Overlay] Segment {seg_id}: using cached context label")
+            else:
+                print(f"[Overlay] Segment {seg_id}: context label '{context_label}'")
+                generate_overlay(
+                    quote_type="context_label",
+                    quote_text=context_label,
+                    output_path=out_path,
+                )
+            seg["overlay_path"] = str(out_path)
+            count += 1
+            continue
 
-        print(f"[Overlay] Segment {seg_id}: generating {quote_type} overlay...")
-        generate_overlay(
-            quote_type=quote_type,
-            quote_text=quote_text,
-            attribution=attribution,
-            output_path=out_path,
-        )
-        seg["overlay_path"] = str(out_path)
-        count += 1
+        seg["overlay_path"] = None
 
-    print(f"[Overlay] Generated {count} text overlays.")
+    print(f"[Overlay] Generated {count} overlays (quotes + context labels).")
     return segments

@@ -190,47 +190,50 @@ def _ffmpeg_process_clip(
     # Probe source to get resolution (needed for scale+crop filter)
     src_w, src_h = _probe_resolution(src)
 
-    # Compute trim duration and speed factor
+    # Compute available source duration after trimming
     if trim_end is not None:
         trim_dur = trim_end - trim_start
     else:
-        # No explicit end — probe the file
         total_dur = _probe_duration(src)
         trim_dur = max(total_dur - trim_start, 0.1)
         trim_end = trim_start + trim_dur
 
-    # Clamp negatives
     trim_start = max(0, trim_start)
     trim_dur = max(0.1, trim_dur)
 
-    # Speed adjustment: if trimmed segment != slot duration, change playback speed
+    # Decide whether the clip needs looping to fill the target slot.
+    # Speed adjustment alone can't stretch a 5s clip to 19s without
+    # extreme slow-motion or running out of input frames mid-slot.
+    needs_loop = trim_dur < target_dur * 0.9
+
     speed_factor = trim_dur / target_dur if target_dur > 0 else 1.0
 
     # Build video filter chain
     filters = []
 
-    # 1. Speed adjustment via setpts (if needed)
-    if abs(speed_factor - 1.0) > 0.01:
-        # setpts=PTS/speed  → speed>1 = faster, speed<1 = slower
-        # Clamp to sane range
+    if needs_loop:
+        # Clip is too short — we'll loop the input, so no speed change needed
+        speed_factor = 1.0
+    elif abs(speed_factor - 1.0) > 0.01:
         clamped = max(0.5, min(speed_factor, 2.0))
         filters.append(f"setpts=PTS/{clamped}")
 
-    # 2. Scale + center-crop
     filters.append(_build_scale_crop_filter(src_w, src_h))
-
-    # 3. Force constant frame rate
     filters.append(f"fps={_cfg.OUTPUT_FPS}")
 
+    loop_tag = " [loop]" if needs_loop else ""
     overlay_tag = " + overlay" if has_overlay else ""
     print(f"  [{index + 1}/{total}] Segment {seg_id}: "
           f"{trim_dur:.1f}s -> {target_dur:.1f}s "
-          f"(speed {speed_factor:.2f}x){overlay_tag}")
+          f"(speed {speed_factor:.2f}x){loop_tag}{overlay_tag}")
+
+    # Build input args: loop short clips so FFmpeg always has enough frames
+    input_args = ["-y"]
+    if needs_loop:
+        input_args += ["-stream_loop", "-1"]
+    input_args += ["-ss", str(trim_start), "-i", src]
 
     if has_overlay:
-        # ── Footage + overlay composite ────────────────────────────────
-        # filter_complex: process video → [base], then composite PNG
-        # overlay on top with a fade-in / fade-out alpha animation.
         vf_chain = ",".join(filters)
         ovr_filters = _build_overlay_fade_chain(target_dur)
 
@@ -241,9 +244,7 @@ def _ffmpeg_process_clip(
         )
 
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(trim_start),
-            "-i", src,
+            "ffmpeg", *input_args,
             "-loop", "1", "-t", str(target_dur),
             "-i", overlay_path,
             "-filter_complex", fc,
@@ -256,12 +257,9 @@ def _ffmpeg_process_clip(
             str(out_path),
         ]
     else:
-        # ── Footage only (no overlay) ──────────────────────────────────
         vf = ",".join(filters)
         cmd = [
-            "ffmpeg", "-y",
-            "-ss", str(trim_start),
-            "-i", src,
+            "ffmpeg", *input_args,
             "-t", str(target_dur),
             "-vf", vf,
             "-c:v", "libx264",
@@ -275,7 +273,15 @@ def _ffmpeg_process_clip(
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
         print(f"  [FFmpeg clip error] {result.stderr[-500:]}")
-        raise RuntimeError(f"FFmpeg failed on segment {seg_id}")
+        print(f"  [Fallback] Generating black clip for segment {seg_id} ({target_dur:.1f}s)")
+        fb_cmd = [
+            "ffmpeg", "-y",
+            "-f", "lavfi", "-i",
+            f"color=c=black:s={_cfg.OUTPUT_WIDTH}x{_cfg.OUTPUT_HEIGHT}:d={target_dur}:r={_cfg.OUTPUT_FPS}",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-preset", "ultrafast",
+            "-an", str(out_path),
+        ]
+        subprocess.run(fb_cmd, capture_output=True, text=True, check=True)
 
     return out_path
 

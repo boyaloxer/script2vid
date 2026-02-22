@@ -412,17 +412,17 @@ composer.addPass(bloom);
 composer.addPass(new OutputPass());
 
 const NODE_DEFS = {
-  core:     { label:'CORE',      pos:[0, 0, 0],          color:'#818cf8', r:0.14 },
-  observe:  { label:'OBSERVE',   pos:[-2.0, 0, 1.2],     color:'#fbbf24', r:0.10 },
-  think:    { label:'THINK',     pos:[0, 2.2, 0],        color:'#818cf8', r:0.10 },
-  act:      { label:'ACT',       pos:[2.0, 0, 1.2],      color:'#60a5fa', r:0.10 },
-  reflect:  { label:'REFLECT',   pos:[0, -2.2, 0],       color:'#34d399', r:0.10 },
-  scout:    { label:'TRENDS',    pos:[-1.4, 1.8, -1.5],  color:'#22d3ee', r:0.08 },
-  strategy: { label:'STRATEGY',  pos:[1.4, 1.8, -1.5],   color:'#a78bfa', r:0.08 },
-  metrics:  { label:'METRICS',   pos:[2.5, -1.2, -1.0],  color:'#f472b6', r:0.08 },
-  audience: { label:'AUDIENCE',  pos:[-2.5, -1.2, -1.0], color:'#fb923c', r:0.08 },
-  generate: { label:'GENERATE',  pos:[1.5, -1.8, 1.3],   color:'#4ade80', r:0.08 },
-  optimize: { label:'OPTIMIZE',  pos:[-1.5, -1.8, 1.3],  color:'#38bdf8', r:0.08 },
+  core:     { label:'CORE',      pos:[0, 0, 0],           color:'#818cf8', r:0.14 },
+  observe:  { label:'OBSERVE',   pos:[-2.2, 0.3, 1.0],    color:'#fbbf24', r:0.10 },
+  think:    { label:'THINK',     pos:[0, 2.4, 0.5],       color:'#818cf8', r:0.10 },
+  act:      { label:'ACT',       pos:[2.2, 0.3, 1.0],     color:'#60a5fa', r:0.10 },
+  reflect:  { label:'REFLECT',   pos:[0, -2.6, 0.5],      color:'#34d399', r:0.10 },
+  scout:    { label:'TRENDS',    pos:[-2.0, 1.8, -1.5],   color:'#22d3ee', r:0.08 },
+  strategy: { label:'STRATEGY',  pos:[2.0, 1.8, -1.5],    color:'#a78bfa', r:0.08 },
+  metrics:  { label:'METRICS',   pos:[2.8, -0.6, -1.2],   color:'#f472b6', r:0.08 },
+  audience: { label:'AUDIENCE',  pos:[-2.8, -0.6, -1.2],  color:'#fb923c', r:0.08 },
+  generate: { label:'GENERATE',  pos:[1.2, -1.6, 1.8],    color:'#4ade80', r:0.08 },
+  optimize: { label:'OPTIMIZE',  pos:[-1.2, -1.6, -1.8],  color:'#38bdf8', r:0.08 },
 };
 
 const EDGE_DEFS = [
@@ -660,6 +660,7 @@ function animate() {
   }
 
   const cw = W(), ch = H();
+  const labelPositions = [];
   for (const [id, node] of Object.entries(nodes)) {
     node.mesh.getWorldPosition(_wp);
     const depth = _wp.z;
@@ -667,13 +668,30 @@ function animate() {
     node.mat.opacity = 0.25 + alpha * 0.75;
     if (node.wire) node.wire.material.opacity = 0.1 + alpha * 0.3;
 
-    // Project node position to screen for DOM label
     const proj = _wp.clone().project(camera);
     const sx = (proj.x * 0.5 + 0.5) * cw;
-    const sy = (-proj.y * 0.5 + 0.5) * ch;
+    let sy = (-proj.y * 0.5 + 0.5) * ch + 18;
+
     const lbl = node.domLabel;
+
+    // Hide labels that are deeply behind
+    if (alpha < 0.12) {
+      lbl.style.opacity = '0';
+      continue;
+    }
+
+    // Simple collision nudge — push apart labels that are too close vertically
+    for (const prev of labelPositions) {
+      const dx = Math.abs(sx - prev.x);
+      const dy = Math.abs(sy - prev.y);
+      if (dx < 60 && dy < 16) {
+        sy = prev.y + (sy >= prev.y ? 16 : -16);
+      }
+    }
+    labelPositions.push({ x: sx, y: sy, id });
+
     const scale = 0.75 + alpha * 0.25;
-    lbl.style.transform = `translate(${sx}px, ${sy + 18}px) translate(-50%, 0) scale(${scale})`;
+    lbl.style.transform = `translate(${sx}px, ${sy}px) translate(-50%, 0) scale(${scale})`;
     lbl.style.opacity = (0.15 + alpha * 0.85).toFixed(2);
   }
 
