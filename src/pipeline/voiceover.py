@@ -1,16 +1,17 @@
 """
 Stage 3 — Voiceover Generation + Timestamp Extraction
 
-Generates narration audio via ElevenLabs TTS with character-level timestamps.
-For scripts longer than the per-request character limit (10,000 for
-eleven_multilingual_v2), automatically chunks the text and uses ElevenLabs'
-Request Stitching (previous_request_ids) to maintain consistent voice prosody
-across chunks.
+Supports two TTS providers (set TTS_PROVIDER in .env):
+
+  * "elevenlabs" — ElevenLabs with character-level timestamps and Request
+    Stitching for multi-chunk prosody continuity.
+  * "fish_audio" — Fish Audio (pay-as-you-go, ~$0.10 per 10-min video).
+    Does not return timestamps, so alignment is synthesised from the
+    audio duration using proportional character mapping.
 
 After generation, audio is post-processed with a 3-stage FFmpeg filter chain:
   1. aformat  — Force mono (safety net for consistent channel layout)
-  2. dynaudnorm — Dynamic per-frame volume levelling (evens out chunk-to-chunk
-     differences and tames transient spikes before global normalization)
+  2. dynaudnorm — Dynamic per-frame volume levelling
   3. loudnorm — EBU R128 loudness normalization (-16 LUFS, YouTube target)
 Output is duplicated to stereo (-ac 2) for universal playback compatibility.
 """
@@ -21,31 +22,25 @@ from pathlib import Path
 import requests
 
 from src.config import (
+    TTS_PROVIDER,
     ELEVENLABS_API_KEY,
     ELEVENLABS_BASE_URL,
     ELEVENLABS_VOICE_ID,
+    FISH_AUDIO_API_KEY,
+    FISH_AUDIO_VOICE_ID,
+    FISH_AUDIO_MODEL,
 )
 
-# eleven_multilingual_v2 has a 10,000 char limit; leave buffer
-_CHAR_LIMIT = 9500
+_EL_CHAR_LIMIT = 9500  # ElevenLabs eleven_multilingual_v2 limit (with buffer)
+_FA_CHAR_LIMIT = 8000  # Fish Audio practical limit per request
 
+
+# ===================================================================
+#  Audio post-processing
+# ===================================================================
 
 def _normalize_audio(audio_path: Path) -> None:
-    """
-    Post-process narration audio in-place with a 3-stage filter chain:
-
-      1. aformat  → force mono (safety net; ElevenLabs already outputs mono,
-                     but guards against any edge-case stereo chunks).
-      2. dynaudnorm → dynamic per-frame gain levelling.  Evens out volume
-                      differences between TTS chunks and tames transient spikes
-                      *before* the global normalizer sees the audio.
-      3. loudnorm → EBU R128 loudness normalization (-16 LUFS, YouTube target).
-                    dual_mono=true ensures correct measurement for mono audio.
-                    TP=-1.5 acts as a true-peak safety limiter.
-
-    Finally, -ac 2 duplicates the mono channel to both L+R so every player
-    routes audio to both ears.
-    """
+    """Loudness-normalise and convert to stereo for YouTube."""
     temp_path = audio_path.with_suffix(".norm.mp3")
     af_chain = (
         "aformat=channel_layouts=mono,"
@@ -56,8 +51,8 @@ def _normalize_audio(audio_path: Path) -> None:
         "ffmpeg", "-y",
         "-i", str(audio_path),
         "-af", af_chain,
-        "-ac", "2",   # duplicate mono to both L+R for universal playback
-        "-q:a", "2",  # high-quality VBR MP3
+        "-ac", "2",
+        "-q:a", "2",
         str(temp_path),
     ]
     print("[Voiceover] Normalizing audio (dynaudnorm + loudnorm + stereo)...")
@@ -65,11 +60,8 @@ def _normalize_audio(audio_path: Path) -> None:
     if result.returncode != 0:
         print(f"[Voiceover] WARNING: Audio normalization failed: {result.stderr[:300]}")
         temp_path.unlink(missing_ok=True)
-        return  # keep original audio as fallback
+        return
 
-    # Replace original with normalized version.
-    # On Windows (especially with OneDrive), the original file may still be
-    # locked briefly. Retry with a short backoff before giving up.
     import time as _time
     for attempt in range(5):
         try:
@@ -82,54 +74,185 @@ def _normalize_audio(audio_path: Path) -> None:
                 _time.sleep(1 * (attempt + 1))
             else:
                 print("[Voiceover] WARNING: Could not replace original audio (file locked). Using normalized copy.")
-                # Fall back: leave temp as the audio and update callers
                 audio_path = temp_path
 
 
+def _get_audio_duration(audio_path: Path) -> float:
+    """Get duration in seconds via ffprobe (no heavy deps)."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        str(audio_path),
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        return float(result.stdout.strip())
+    except Exception:
+        pass
+    try:
+        from moviepy import AudioFileClip
+        clip = AudioFileClip(str(audio_path))
+        dur = clip.duration
+        clip.close()
+        return dur
+    except Exception:
+        return 0.0
+
+
+def _build_proportional_alignment(text: str, total_duration: float) -> dict:
+    """
+    Synthesise character-level alignment from total audio duration.
+    Distributes time proportionally by character count — accurate enough
+    for segment-to-video mapping when the TTS provider doesn't return
+    native timestamps.
+    """
+    if total_duration <= 0 or not text:
+        return {}
+
+    chars = list(text)
+    n = len(chars)
+    time_per_char = total_duration / n
+
+    starts = []
+    ends = []
+    cursor = 0.0
+    for _ in chars:
+        starts.append(round(cursor, 4))
+        cursor += time_per_char
+        ends.append(round(cursor, 4))
+
+    return {
+        "characters": chars,
+        "character_start_times_seconds": starts,
+        "character_end_times_seconds": ends,
+    }
+
+
+# ===================================================================
+#  Public entry point
+# ===================================================================
+
 def generate_voiceover(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     """
-    Generate narration audio with character-level timestamps.
-    Automatically chunks long scripts and uses Request Stitching for
-    consistent voice quality across chunks.
+    Generate narration audio with alignment timestamps.
+
+    Dispatches to ElevenLabs or Fish Audio based on TTS_PROVIDER.
 
     Returns:
         (audio_path, alignment_data)
-
-        alignment_data has the structure:
-        {
-            "characters": ["H", "e", "l", "l", "o", ...],
-            "character_start_times_seconds": [0.0, 0.05, ...],
-            "character_end_times_seconds": [0.05, 0.12, ...]
-        }
     """
+    provider = TTS_PROVIDER
+
+    if provider == "fish_audio":
+        if not FISH_AUDIO_API_KEY:
+            raise RuntimeError("FISH_AUDIO_API_KEY is not set. Add it to your .env file.")
+        print(f"[Voiceover] Using Fish Audio (model: {FISH_AUDIO_MODEL})")
+        return _fish_audio_generate(script_text, audio_dir)
+
+    # Default: ElevenLabs
     if not ELEVENLABS_API_KEY:
         raise RuntimeError("ELEVENLABS_API_KEY is not set. Add it to your .env file.")
-
-    if len(script_text) <= _CHAR_LIMIT:
-        return _tts_single(script_text, audio_dir)
+    print("[Voiceover] Using ElevenLabs")
+    if len(script_text) <= _EL_CHAR_LIMIT:
+        return _elevenlabs_single(script_text, audio_dir)
     else:
-        return _tts_chunked(script_text, audio_dir)
+        return _elevenlabs_chunked(script_text, audio_dir)
 
 
-# ---------------------------------------------------------------------------
-#  Internal helpers
-# ---------------------------------------------------------------------------
+# ===================================================================
+#  Fish Audio provider
+# ===================================================================
 
-def _tts_request(
+_FA_BASE_URL = "https://api.fish.audio"
+
+
+def _fish_audio_tts_request(text: str) -> bytes:
+    """Single Fish Audio TTS call. Returns raw MP3 bytes."""
+    url = f"{_FA_BASE_URL}/v1/tts"
+    body: dict = {
+        "text": text,
+        "format": "mp3",
+        "mp3_bitrate": 192,
+        "latency": "normal",
+        "chunk_length": 300,
+        "normalize": True,
+    }
+    if FISH_AUDIO_VOICE_ID:
+        body["reference_id"] = FISH_AUDIO_VOICE_ID
+
+    from src.utils.retry import retry as _retry
+
+    @_retry(max_attempts=3, base_delay=5.0, max_delay=30.0,
+            exceptions=(requests.RequestException,))
+    def _do_post():
+        r = requests.post(
+            url,
+            headers={
+                "Authorization": f"Bearer {FISH_AUDIO_API_KEY}",
+                "Content-Type": "application/json",
+                "model": FISH_AUDIO_MODEL,
+            },
+            json=body,
+            timeout=600,
+            stream=True,
+        )
+        if not r.ok:
+            try:
+                err_detail = r.json()
+            except Exception:
+                err_detail = r.text[:500]
+            print(f"[Voiceover] Fish Audio API error {r.status_code}: {err_detail}")
+        r.raise_for_status()
+        return r.content
+
+    return _do_post()
+
+
+def _fish_audio_generate(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
+    """Generate audio via Fish Audio, with chunking for long scripts."""
+    audio_path = audio_dir / "narration.mp3"
+
+    if len(script_text) <= _FA_CHAR_LIMIT:
+        print(f"[Voiceover] Script is {len(script_text):,} chars — single request")
+        audio_bytes = _fish_audio_tts_request(script_text)
+        audio_path.write_bytes(audio_bytes)
+    else:
+        chunks = _split_into_chunks(script_text, _FA_CHAR_LIMIT)
+        print(
+            f"[Voiceover] Script is {len(script_text):,} chars — "
+            f"splitting into {len(chunks)} chunks"
+        )
+        all_audio: list[bytes] = []
+        for i, chunk_text in enumerate(chunks):
+            print(f"[Voiceover] Generating chunk {i + 1}/{len(chunks)} ({len(chunk_text):,} chars)...")
+            audio_bytes = _fish_audio_tts_request(chunk_text)
+            all_audio.append(audio_bytes)
+            print(f"[Voiceover] Chunk {i + 1}: received {len(audio_bytes):,} bytes")
+        audio_path.write_bytes(b"".join(all_audio))
+
+    print(f"[Voiceover] Saved narration audio to {audio_path}")
+    _normalize_audio(audio_path)
+
+    total_duration = _get_audio_duration(audio_path)
+    print(f"[Voiceover] Audio duration: {total_duration:.1f}s")
+
+    alignment = _build_proportional_alignment(script_text, total_duration)
+    if not alignment:
+        print("[Voiceover] WARNING: Could not build alignment data.")
+
+    return audio_path, alignment
+
+
+# ===================================================================
+#  ElevenLabs provider
+# ===================================================================
+
+def _elevenlabs_tts_request(
     text: str,
     previous_request_ids: list[str] | None = None,
 ) -> tuple[bytes, dict, str]:
-    """
-    Single ElevenLabs TTS API call with timestamps.
-
-    Args:
-        text: The text to synthesise.
-        previous_request_ids: Up to 3 IDs from prior requests for
-            Request Stitching (maintains prosody across chunks).
-
-    Returns:
-        (audio_bytes, alignment_dict, request_id)
-    """
+    """Single ElevenLabs TTS API call with timestamps."""
     url = f"{ELEVENLABS_BASE_URL}/text-to-speech/{ELEVENLABS_VOICE_ID}/with-timestamps"
 
     body: dict = {
@@ -141,8 +264,6 @@ def _tts_request(
             "use_speaker_boost": True,
         },
     }
-
-    # Request Stitching: pass previous request IDs for prosody continuity
     if previous_request_ids:
         body["previous_request_ids"] = previous_request_ids
 
@@ -171,7 +292,6 @@ def _tts_request(
 
     resp = _do_tts_post()
 
-    # Track character usage
     try:
         from src.utils.quota_tracker import record_elevenlabs_chars
         record_elevenlabs_chars(len(text))
@@ -186,16 +306,15 @@ def _tts_request(
     return audio_bytes, alignment, request_id
 
 
-def _tts_single(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
-    """Generate audio in a single API call (scripts under the char limit)."""
+def _elevenlabs_single(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
+    """Generate audio in a single ElevenLabs API call."""
     print(f"[Voiceover] Script is {len(script_text):,} chars — single request")
-    audio_bytes, alignment, _ = _tts_request(script_text)
+    audio_bytes, alignment, _ = _elevenlabs_tts_request(script_text)
 
     audio_path = audio_dir / "narration.mp3"
     audio_path.write_bytes(audio_bytes)
     print(f"[Voiceover] Saved narration audio to {audio_path}")
 
-    # Post-process: mono + loudness normalization
     _normalize_audio(audio_path)
 
     if not alignment:
@@ -204,20 +323,12 @@ def _tts_single(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
     return audio_path, alignment
 
 
-def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
-    """
-    Generate audio for a long script by splitting into chunks and using
-    ElevenLabs Request Stitching to maintain voice consistency.
-
-    Chunks are split at sentence boundaries to avoid cutting mid-sentence.
-    Audio bytes are concatenated directly (MP3 is frame-based).
-    Alignment timestamps are offset by the cumulative audio duration of
-    previous chunks so the final alignment is continuous.
-    """
-    chunks = _split_into_chunks(script_text, _CHAR_LIMIT)
+def _elevenlabs_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
+    """Generate audio for long scripts via ElevenLabs Request Stitching."""
+    chunks = _split_into_chunks(script_text, _EL_CHAR_LIMIT)
     print(
         f"[Voiceover] Script is {len(script_text):,} chars — "
-        f"splitting into {len(chunks)} chunks (limit: {_CHAR_LIMIT:,} chars/chunk)"
+        f"splitting into {len(chunks)} chunks (limit: {_EL_CHAR_LIMIT:,} chars/chunk)"
     )
 
     request_ids: list[str] = []
@@ -235,14 +346,12 @@ def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
             f"({len(chunk_text):,} chars)..."
         )
 
-        # Pass up to 3 recent request IDs for prosody continuity
         prev_ids = request_ids[-3:] if request_ids else None
-        audio_bytes, alignment, request_id = _tts_request(chunk_text, prev_ids)
+        audio_bytes, alignment, request_id = _elevenlabs_tts_request(chunk_text, prev_ids)
 
         if request_id:
             request_ids.append(request_id)
 
-        # Measure actual chunk duration via temp file (more accurate than timestamps)
         chunk_duration = 0.0
         temp_path = audio_dir / f"_chunk_{i}.mp3"
         temp_path.write_bytes(audio_bytes)
@@ -252,13 +361,11 @@ def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
             chunk_duration = clip.duration
             clip.close()
         except Exception:
-            # Fall back to alignment-based duration
             chunk_ends = alignment.get("character_end_times_seconds", [])
             chunk_duration = chunk_ends[-1] if chunk_ends else 0.0
         finally:
             temp_path.unlink(missing_ok=True)
 
-        # Merge alignment data with cumulative time offset
         for start in alignment.get("character_start_times_seconds", []):
             merged_alignment["character_start_times_seconds"].append(
                 round(start + cumulative_duration, 4)
@@ -279,7 +386,6 @@ def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
             f"(cumulative: {cumulative_duration:.2f}s)"
         )
 
-    # Concatenate all chunk audio (MP3 is frame-based, byte concat works)
     audio_path = audio_dir / "narration.mp3"
     audio_path.write_bytes(b"".join(chunk_audio_parts))
 
@@ -288,7 +394,6 @@ def _tts_chunked(script_text: str, audio_dir: Path) -> tuple[Path, dict]:
         f"({cumulative_duration:.1f}s) to {audio_path}"
     )
 
-    # Post-process: mono + loudness normalization
     _normalize_audio(audio_path)
 
     if not merged_alignment["characters"]:

@@ -35,11 +35,23 @@ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PEXELS_BASE_URL = "https://api.pexels.com/videos"
 
 # ---------------------------------------------------------------------------
+# TTS Provider — "elevenlabs" or "fish_audio"
+# ---------------------------------------------------------------------------
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "elevenlabs").lower().strip()
+
+# ---------------------------------------------------------------------------
 # ElevenLabs
 # ---------------------------------------------------------------------------
 ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")
 ELEVENLABS_VOICE_ID = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
 ELEVENLABS_BASE_URL = "https://api.elevenlabs.io/v1"
+
+# ---------------------------------------------------------------------------
+# Fish Audio
+# ---------------------------------------------------------------------------
+FISH_AUDIO_API_KEY = os.getenv("FISH_AUDIO_API_KEY", "")
+FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "")
+FISH_AUDIO_MODEL = os.getenv("FISH_AUDIO_MODEL", "speech-1.5")
 
 # ---------------------------------------------------------------------------
 # Output settings
