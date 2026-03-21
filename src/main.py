@@ -422,7 +422,14 @@ def main():
     parser.add_argument(
         "--captions",
         action="store_true",
-        help="Burn closed captions into the video, synced to the narrator's speech.",
+        default=True,
+        help="Burn closed captions into the video, synced to the narrator's speech. On by default; use --no-captions to disable.",
+    )
+    parser.add_argument(
+        "--no-captions",
+        action="store_true",
+        dest="no_captions",
+        help="Disable burned-in captions.",
     )
     parser.add_argument(
         "--vertical",
@@ -576,6 +583,10 @@ def main():
         _cfg.OUTPUT_WIDTH = 1080
         _cfg.OUTPUT_HEIGHT = 1920
         print("[Config] Vertical mode: 1080x1920 (9:16)")
+
+    # --no-captions overrides the default-on captions
+    if getattr(args, "no_captions", False):
+        args.captions = False
 
     # --schedule implies --publish (for manual publishing without --channel)
     if args.schedule:

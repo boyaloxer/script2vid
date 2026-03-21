@@ -177,6 +177,12 @@ def _fish_audio_tts_request(text: str) -> bytes:
         "latency": "normal",
         "chunk_length": 300,
         "normalize": True,
+        "temperature": 0.6,
+        "top_p": 0.7,
+        "prosody": {
+            "speed": 0.95,
+            "volume": 0,
+        },
     }
     if FISH_AUDIO_VOICE_ID:
         body["reference_id"] = FISH_AUDIO_VOICE_ID
