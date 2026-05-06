@@ -6,6 +6,10 @@ selects the best clip, and downloads it locally.
 
 Includes a sliding-window rate limiter to stay within Pexels' 200 req/hour
 limit on long-form videos (80–150+ segments).
+
+When :data:`src.config.FOOTAGE_VISUAL_VERIFY` is enabled and a Gemini API
+key is configured, the top text-scored candidates are re-ranked by visual
+relevance using :mod:`src.pipeline.footage_verifier` before download.
 """
 
 import time
@@ -14,6 +18,7 @@ import requests
 
 import src.config as _cfg
 from src.config import PEXELS_API_KEY, PEXELS_BASE_URL
+from src.pipeline import footage_verifier
 from src.utils.rate_limiter import RateLimiter
 
 # Shared rate limiter for all Pexels API calls in this module
@@ -121,6 +126,90 @@ def _parse_slug(url: str) -> str:
     if len(parts) == 2 and parts[1].isdigit():
         slug = parts[0]
     return slug.replace("-", " ").lower()
+
+
+# How many top text-scored candidates to send through visual verification.
+# More = better picks but more Gemini API calls. 3 is a good cost/quality tradeoff.
+_VISUAL_VERIFY_TOP_N = 3
+
+
+def _frame_urls_for_video(video: dict) -> list[str]:
+    """Return preview-frame URLs for a Pexels video object.
+
+    Pexels returns a ``video_pictures`` array with multiple thumbnails sampled
+    across the clip's runtime — perfect for assessing visual content without
+    downloading the actual video. Falls back to the single ``image`` field
+    when ``video_pictures`` is missing.
+    """
+    pictures = video.get("video_pictures") or []
+    urls = [p.get("picture") for p in pictures if p.get("picture")]
+    if urls:
+        # Sample evenly across the clip: first, middle, last
+        if len(urls) >= 3:
+            return [urls[0], urls[len(urls) // 2], urls[-1]]
+        return urls
+    image = video.get("image")
+    return [image] if image else []
+
+
+def _pick_best_with_visual_verification(
+    scored: list[tuple[dict, float]],
+    seg_text: str,
+    search_query: str,
+    seg_id,
+) -> dict:
+    """
+    Re-rank the top text-scored candidates by visual relevance using Gemini.
+
+    Falls back to the highest text-scored video when verification is
+    unavailable or every candidate fails to verify.
+    """
+    if not scored:
+        return scored[0][0]  # caller guards against empty list elsewhere
+
+    if not footage_verifier.is_available():
+        return scored[0][0]
+
+    candidates = scored[:_VISUAL_VERIFY_TOP_N]
+    print(
+        f"[Footage Finder]   Visual verification: checking top "
+        f"{len(candidates)} candidates with Gemini..."
+    )
+
+    best_video = None
+    best_visual_score = -1.0
+    best_description = ""
+
+    for video, text_score in candidates:
+        frames = _frame_urls_for_video(video)
+        if not frames:
+            continue
+        result = footage_verifier.verify_candidate(
+            frames, segment_text=seg_text, search_query=search_query
+        )
+        if result is None:
+            continue
+        # Combine: visual score is dominant, text score breaks ties
+        combined = result.score + (text_score * 0.05)
+        slug = _parse_slug(video.get("url", "")) or "(no slug)"
+        print(
+            f"[Footage Finder]     #{video.get('id')}: visual={result.score:.1f}/10  "
+            f"text={text_score:.2f}  '{result.description or slug[:50]}'"
+        )
+        if combined > best_visual_score:
+            best_visual_score = combined
+            best_video = video
+            best_description = result.description
+
+    if best_video is None:
+        # Visual verification failed for all candidates (e.g. API down).
+        # Fall back silently to the text-scored top pick.
+        print(f"[Footage Finder]   Visual verification unavailable, using text rank.")
+        return scored[0][0]
+
+    if best_description:
+        print(f"[Footage Finder]   ✓ Picked clip showing: {best_description}")
+    return best_video
 
 
 def _score_video(video: dict, keywords: list[str], needed_duration: float = 0) -> float:
@@ -279,7 +368,16 @@ def find_footage_for_segments(
             scored = [(v, _score_video(v, keywords, needed_dur)) for v in videos]
             scored.sort(key=lambda x: x[1], reverse=True)
 
-        best_video = scored[0][0]
+        # Visual relevance pass: ask Gemini to look at preview frames of the
+        # top text-scored candidates and pick the one that actually depicts
+        # what the segment is about. Gracefully no-ops when disabled or
+        # API key missing.
+        best_video = _pick_best_with_visual_verification(
+            scored,
+            seg_text=seg.get("text", ""),
+            search_query=query,
+            seg_id=seg_id,
+        )
         best_file = _pick_best_file(best_video)
 
         if not best_file:

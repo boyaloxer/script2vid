@@ -54,6 +54,16 @@ FISH_AUDIO_VOICE_ID = os.getenv("FISH_AUDIO_VOICE_ID", "")
 FISH_AUDIO_MODEL = os.getenv("FISH_AUDIO_MODEL", "speech-1.5")
 
 # ---------------------------------------------------------------------------
+# Gemini (visual relevance verification for footage)
+# ---------------------------------------------------------------------------
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+# When True, footage candidates are re-ranked by Gemini visual relevance
+# before download. Requires GEMINI_API_KEY. Falls back to text-only scoring
+# if disabled or unavailable.
+FOOTAGE_VISUAL_VERIFY = os.getenv("FOOTAGE_VISUAL_VERIFY", "true").lower() == "true"
+
+# ---------------------------------------------------------------------------
 # Output settings
 # ---------------------------------------------------------------------------
 _resolution = os.getenv("OUTPUT_RESOLUTION", "1920x1080").split("x")
