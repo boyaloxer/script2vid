@@ -60,8 +60,9 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # When True, footage candidates are re-ranked by Gemini visual relevance
 # before download. Requires GEMINI_API_KEY. Falls back to text-only scoring
-# if disabled or unavailable.
-FOOTAGE_VISUAL_VERIFY = os.getenv("FOOTAGE_VISUAL_VERIFY", "true").lower() == "true"
+# if disabled or unavailable. Off by default — opt in once we've decided
+# on the broader sourcing architecture.
+FOOTAGE_VISUAL_VERIFY = os.getenv("FOOTAGE_VISUAL_VERIFY", "false").lower() == "true"
 
 # ---------------------------------------------------------------------------
 # Output settings
